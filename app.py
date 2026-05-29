@@ -7,13 +7,20 @@ and streaming summary output.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 import uuid
 
+import pandas as pd
 import streamlit as st
 
 from modules.parser import SUPPORTED_EXTENSIONS
 from modules.pipeline import run_pipeline, PipelineProgress
+from modules.table_store import (
+    get_tables_for_session,
+    get_document_names_for_session,
+    delete_tables_for_document_session,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -256,11 +263,24 @@ st.markdown("""
 
 
 # ---------------------------------------------------------------------------
-# Session state initialization
+# Session state initialization — persistent token via URL query params
 # ---------------------------------------------------------------------------
 
+# Generate or restore a persistent session token.
+# Stored in the URL as ?token=xxxx so it survives page refreshes.
+# Each user gets a unique token → their tables are isolated in MongoDB.
+params = st.query_params
+if "token" in params:
+    _session_token = params["token"]
+else:
+    _session_token = uuid.uuid4().hex[:16]  # 16-char cryptographic token
+    st.query_params["token"] = _session_token
+
 if "session_id" not in st.session_state:
-    st.session_state.session_id = str(uuid.uuid4())[:8]
+    st.session_state.session_id = _session_token
+else:
+    st.session_state.session_id = _session_token
+
 if "pipeline_result" not in st.session_state:
     st.session_state.pipeline_result = None
 if "pipeline_stats" not in st.session_state:
@@ -497,6 +517,130 @@ if st.session_state.pipeline_result is not None:
             mime="text/markdown",
             use_container_width=True,
         )
+
+
+# ---------------------------------------------------------------------------
+# Table Viewer — Session-scoped, user-isolated
+# ---------------------------------------------------------------------------
+
+st.markdown("")
+st.markdown("## 🗄️ Extracted Tables Viewer")
+st.markdown(
+    '<p style="color: var(--text-secondary); font-size: 0.9rem;">'
+    'Tables extracted from your documents are stored securely in MongoDB. '
+    'Only you can see tables from your session.'
+    '</p>',
+    unsafe_allow_html=True,
+)
+
+try:
+    user_documents = get_document_names_for_session(st.session_state.session_id)
+except Exception as e:
+    user_documents = []
+    st.warning(f"⚠️ Could not connect to MongoDB: {e}")
+
+if user_documents:
+    # Document selector
+    selected_doc = st.selectbox(
+        "Select a document",
+        options=user_documents,
+        format_func=lambda x: f"📄 {x}",
+        key="table_viewer_doc_select",
+    )
+
+    if selected_doc:
+        tables = get_tables_for_session(st.session_state.session_id, selected_doc)
+
+        if tables:
+            st.markdown(f"""
+            <div class="glass-card">
+                <strong>📊 {len(tables)} table(s)</strong> extracted from
+                <strong>{selected_doc}</strong>
+                <span style="color: var(--text-secondary); margin-left: 0.5rem;">
+                    🔒 Session-scoped · Only visible to you
+                </span>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Display each table
+            for idx, tbl in enumerate(tables):
+                page_num = tbl.get("page_number", "?")
+                headers = tbl.get("headers", [])
+                raw = tbl.get("raw", [])
+
+                with st.expander(
+                    f"📋 Table {idx + 1} — Page {page_num} "
+                    f"({len(raw) - 1 if len(raw) > 1 else 0} rows, "
+                    f"{len(headers)} columns)",
+                    expanded=(idx == 0),
+                ):
+                    if raw and len(raw) > 1:
+                        df = pd.DataFrame(raw[1:], columns=raw[0] if raw[0] else None)
+                        st.dataframe(df, use_container_width=True)
+                    elif raw:
+                        st.dataframe(pd.DataFrame(raw), use_container_width=True)
+                    else:
+                        st.info("Empty table.")
+
+            # Download & Delete actions
+            st.markdown("")
+            act_col1, act_col2, act_col3 = st.columns([1, 1, 1])
+
+            with act_col1:
+                # Download as CSV
+                all_rows = []
+                for tbl in tables:
+                    raw = tbl.get("raw", [])
+                    if raw and len(raw) > 1:
+                        for row in raw[1:]:
+                            row_dict = dict(zip(raw[0], row)) if raw[0] else {}
+                            row_dict["_page"] = tbl.get("page_number", "")
+                            all_rows.append(row_dict)
+                if all_rows:
+                    csv_df = pd.DataFrame(all_rows)
+                    st.download_button(
+                        label="📥 Download CSV",
+                        data=csv_df.to_csv(index=False),
+                        file_name=f"{selected_doc}_tables.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                    )
+
+            with act_col2:
+                # Download as JSON
+                st.download_button(
+                    label="📥 Download JSON",
+                    data=json.dumps(tables, indent=2, default=str),
+                    file_name=f"{selected_doc}_tables.json",
+                    mime="application/json",
+                    use_container_width=True,
+                )
+
+            with act_col3:
+                # Delete tables for this document
+                if st.button(
+                    "🗑️ Delete Tables",
+                    use_container_width=True,
+                    key=f"delete_{selected_doc}",
+                ):
+                    deleted = delete_tables_for_document_session(
+                        st.session_state.session_id, selected_doc
+                    )
+                    st.success(f"Deleted {deleted} table(s) for '{selected_doc}'.")
+                    time.sleep(1)
+                    st.rerun()
+        else:
+            st.info("No tables found for this document.")
+
+else:
+    st.markdown("""
+    <div class="glass-card" style="text-align: center; padding: 2rem;">
+        <div style="font-size: 2rem; margin-bottom: 0.75rem;">🗄️</div>
+        <div style="color: var(--text-secondary); font-size: 0.9rem;">
+            No tables extracted yet. Upload and process a document to see extracted tables here.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------

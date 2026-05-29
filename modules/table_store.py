@@ -101,6 +101,53 @@ def get_tables_for_document(document_name: str) -> list[dict]:
     return list(cursor)
 
 
+def get_tables_for_session(session_id: str, document_name: str = None) -> list[dict]:
+    """
+    Retrieve tables scoped to a specific session token.
+    This ensures user isolation — each user only sees their own tables.
+
+    Args:
+        session_id: The user's unique session token.
+        document_name: Optional filter by document name.
+
+    Returns:
+        List of table documents belonging to this session.
+    """
+    collection = _get_collection()
+    query = {"session_id": session_id}
+    if document_name:
+        query["document_name"] = document_name
+
+    cursor = collection.find(
+        query,
+        {"_id": 0},
+    ).sort("page_number", 1)
+    return list(cursor)
+
+
+def get_document_names_for_session(session_id: str) -> list[str]:
+    """
+    Get all unique document names uploaded by a specific session.
+    Used to populate the table viewer's document selector.
+    """
+    collection = _get_collection()
+    return collection.distinct("document_name", {"session_id": session_id})
+
+
+def delete_tables_for_document_session(session_id: str, document_name: str) -> int:
+    """
+    Delete all tables for a specific document within a session.
+    Returns the number of documents deleted.
+    """
+    collection = _get_collection()
+    result = collection.delete_many({
+        "session_id": session_id,
+        "document_name": document_name,
+    })
+    logger.info(f"Deleted {result.deleted_count} tables for '{document_name}' in session {session_id}")
+    return result.deleted_count
+
+
 def get_table_summary_text(tables: list[ExtractedTable]) -> str:
     """
     Generate a text summary of tables for inclusion in the text pipeline.
@@ -121,3 +168,4 @@ def get_table_summary_text(tables: list[ExtractedTable]) -> str:
         )
 
     return "\n".join(summaries)
+
