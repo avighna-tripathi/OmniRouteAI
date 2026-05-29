@@ -368,10 +368,10 @@ with st.sidebar:
     st.markdown("""
     | Phase | Model |
     |-------|-------|
-    | Map (Fact/Summary) | `Gemini 1.5 Flash` |
-    | Reduce (Executive) | `Gemini 1.5 Pro` |
-    | Critic | `Gemini 1.5 Pro` |
-    | Vision | `Gemini 1.5 Flash` |
+    | Map (Fact/Summary) | `Gemini 2.0 Flash` |
+    | Reduce (Executive) | `Gemini 2.5 Pro` |
+    | Critic | `Gemini 2.5 Pro` |
+    | Vision | `Gemini 2.0 Flash` |
     """)
 
     st.markdown("---")

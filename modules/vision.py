@@ -48,9 +48,9 @@ CAPTION_PROMPT = (
 
 
 def _get_vision_model() -> ChatGoogleGenerativeAI:
-    """Initialize Gemini Flash for vision (fast, cost-efficient)."""
+    """Initialize Gemini 2.0 Flash for vision (fast, cost-efficient)."""
     return ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash",
+        model="gemini-2.0-flash",
         google_api_key=st.secrets["GEMINI_API_KEY"],
         temperature=0.1,
         max_output_tokens=1024,

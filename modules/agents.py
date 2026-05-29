@@ -49,9 +49,9 @@ class ReduceOutput:
 # ---------------------------------------------------------------------------
 
 def _get_flash_model(temperature: float = 0.1) -> ChatGoogleGenerativeAI:
-    """Gemini 1.5 Flash — fast, cost-efficient for parallel Map work."""
+    """Gemini 2.0 Flash — fast, cost-efficient for parallel Map work."""
     return ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash",
+        model="gemini-2.0-flash",
         google_api_key=st.secrets["GEMINI_API_KEY"],
         temperature=temperature,
         max_output_tokens=4096,
@@ -59,9 +59,9 @@ def _get_flash_model(temperature: float = 0.1) -> ChatGoogleGenerativeAI:
 
 
 def _get_pro_model(temperature: float = 0.2) -> ChatGoogleGenerativeAI:
-    """Gemini 1.5 Pro — deep synthesis for Executive/Critic Reduce phase."""
+    """Gemini 2.5 Pro — deep synthesis for Executive/Critic Reduce phase."""
     return ChatGoogleGenerativeAI(
-        model="gemini-1.5-pro",
+        model="gemini-2.5-pro",
         google_api_key=st.secrets["GEMINI_API_KEY"],
         temperature=temperature,
         max_output_tokens=16384,
