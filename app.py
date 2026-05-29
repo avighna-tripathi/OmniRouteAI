@@ -369,8 +369,8 @@ with st.sidebar:
     | Phase | Model |
     |-------|-------|
     | Map (Fact/Summary) | `Gemini 2.0 Flash` |
-    | Reduce (Executive) | `Gemini 2.5 Pro` |
-    | Critic | `Gemini 2.5 Pro` |
+    | Reduce (Executive) | `Gemini 2.5 Flash` |
+    | Critic | `Gemini 2.5 Flash` |
     | Vision | `Gemini 2.0 Flash` |
     """)
 

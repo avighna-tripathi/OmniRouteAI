@@ -59,9 +59,9 @@ def _get_flash_model(temperature: float = 0.1) -> ChatGoogleGenerativeAI:
 
 
 def _get_pro_model(temperature: float = 0.2) -> ChatGoogleGenerativeAI:
-    """Gemini 2.5 Pro — deep synthesis for Executive/Critic Reduce phase."""
+    """Gemini 2.5 Flash — capable synthesis for Executive/Critic Reduce phase."""
     return ChatGoogleGenerativeAI(
-        model="gemini-2.5-pro",
+        model="gemini-2.5-flash",
         google_api_key=st.secrets["GEMINI_API_KEY"],
         temperature=temperature,
         max_output_tokens=16384,
