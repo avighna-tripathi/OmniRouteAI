@@ -28,6 +28,11 @@ class MapOutput(BaseModel):
     facts: list[str]
     summary: str
 
+class ReduceOutput(BaseModel):
+    master_summary: str
+    critic_feedback: str
+    is_consistent: bool
+
 
 # ---------------------------------------------------------------------------
 # Model factory
