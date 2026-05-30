@@ -4,7 +4,7 @@ Defines the multi-agent system for the Map and Reduce phases.
 from typing import Optional
 
 import streamlit as st
-from langchain_groq import ChatGroq
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate
 
@@ -38,23 +38,23 @@ class ReduceOutput(BaseModel):
 # Model factory
 # ---------------------------------------------------------------------------
 
-def _get_fast_model(temperature: float = 0.1) -> ChatGroq:
-    """Llama 3 8B — blazing fast for parallel Map work."""
-    return ChatGroq(
-        model="llama-3.1-8b-instant",
-        api_key=st.secrets["GROQ_API_KEY"],
+def _get_fast_model(temperature: float = 0.1) -> ChatGoogleGenerativeAI:
+    """Uses the extremely fast Gemini 2.0 Flash for parallel Map work."""
+    return ChatGoogleGenerativeAI(
+        model="gemini-2.0-flash",
+        google_api_key=st.secrets["GEMINI_API_KEY"],
         temperature=temperature,
-        max_tokens=4096,
+        max_retries=6,
     )
 
 
-def _get_pro_model(temperature: float = 0.2) -> ChatGroq:
-    """Llama 3 8B — keeping it lightweight for Reduce phase to save credits."""
-    return ChatGroq(
-        model="llama-3.1-8b-instant",
-        api_key=st.secrets["GROQ_API_KEY"],
+def _get_pro_model(temperature: float = 0.2) -> ChatGoogleGenerativeAI:
+    """Uses Gemini 2.5 Flash for the heavy-lifting Reduce phase."""
+    return ChatGoogleGenerativeAI(
+        model="gemini-2.5-flash",
+        google_api_key=st.secrets["GEMINI_API_KEY"],
         temperature=temperature,
-        max_tokens=8192,
+        max_retries=6,
     )
 
 
@@ -76,7 +76,6 @@ Extract into three lists:
 @api_retry
 async def _run_fact_agent(model, chunk_text: str) -> dict:
     """Extracts facts from a chunk and returns a dictionary."""
-    # We use a standard generation with strict JSON formatting instructions.
     prompt = ChatPromptTemplate.from_messages([
         ("system", FACT_AGENT_SYSTEM + "\n\nYou MUST respond ONLY with valid JSON matching this schema: {{\"facts\": [\"...\"], \"key_entities\": [\"...\"], \"data_points\": [\"...\"]}}"),
         ("human", "Text to process:\n\n{text}")
@@ -127,17 +126,15 @@ async def _run_summary_agent(model, chunk_text: str) -> str:
 
 import asyncio
 
-# Limit concurrent API calls to avoid rate limits (Groq free tier is strict)
-_map_limiter = ConcurrencyLimiter(max_concurrent=5)
+# Note: Gemini free tier has strict RPM limits. ConcurrencyLimiter controls burst rate.
+_map_limiter = ConcurrencyLimiter(max_concurrent=10)
 
-async def run_map_phase_single(chunk_id: int, chunk_text: str, source_pages: set[int], model: Optional[ChatGroq] = None) -> MapOutput:
+async def run_map_phase_single(chunk_id: int, chunk_text: str, source_pages: set[int], model: Optional[ChatGoogleGenerativeAI] = None) -> MapOutput:
     """Runs both Map agents on a single chunk concurrently."""
     if model is None:
         model = _get_fast_model()
         
     async with _map_limiter:
-        # Adding a tiny sleep to space out Groq API requests and avoid immediate 429s
-        await asyncio.sleep(0.5)
         fact_task = _run_fact_agent(model, chunk_text)
         summary_task = _run_summary_agent(model, chunk_text)
         
