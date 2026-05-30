@@ -26,7 +26,7 @@ from modules.agents import (
     run_map_phase_single,
     run_executive_agent,
     run_critic_agent,
-    _get_flash_model,
+    _get_fast_model,
 )
 from modules.utils import logger
 
@@ -180,7 +180,7 @@ async def run_pipeline(
     # ===================================================================
     _update("map_phase", 0.0, f"🔬 Running Map phase on {len(chunks)} chunks…")
 
-    flash_model = _get_flash_model()
+    fast_model = _get_fast_model()
     map_outputs: list[MapOutput] = []
     completed_chunks = 0
 
@@ -194,7 +194,7 @@ async def run_pipeline(
                 chunk_id=c.chunk_id,
                 chunk_text=c.text,
                 source_pages=c.source_pages,
-                model=flash_model,
+                model=fast_model,
             )
             for c in batch
         ]
