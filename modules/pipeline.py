@@ -234,6 +234,23 @@ async def run_pipeline(
 
     master_summary = await run_executive_agent(map_outputs, filename)
 
+    if not master_summary or not master_summary.strip():
+        logger.error(
+            f"Executive Agent returned empty summary! "
+            f"Map outputs count: {len(map_outputs)}, "
+            f"total facts: {sum(len(m.facts) for m in map_outputs)}"
+        )
+        # Build a fallback summary from map outputs so the user gets SOMETHING
+        fallback_parts = ["## Auto-generated Fallback Summary\n",
+                          "*The Executive Agent returned an empty response. "
+                          "Below are the individual section summaries:*\n"]
+        for mo in sorted(map_outputs, key=lambda x: x.chunk_id):
+            fallback_parts.append(
+                f"### Section {mo.chunk_id + 1} (Pages {', '.join(map(str, mo.source_pages))})\n"
+                f"{mo.summary}\n"
+            )
+        master_summary = "\n".join(fallback_parts)
+
     progress.stats["summary_length"] = len(master_summary)
     _update("reduce_phase", 1.0, "✅ Master summary generated")
 

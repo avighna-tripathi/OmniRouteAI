@@ -485,23 +485,23 @@ if st.session_state.pipeline_result is not None:
         </div>
         """, unsafe_allow_html=True)
 
-    # Master Summary — Streamed output
+    # Master Summary
     st.markdown("## 📋 Master Summary")
     st.markdown("---")
 
-    # Use st.write_stream for token-level streaming effect
-    def _stream_summary():
-        """Generator that yields the summary in word-sized chunks for streaming."""
-        words = result.master_summary.split(" ")
-        buffer = ""
-        for i, word in enumerate(words):
-            buffer += word + " "
-            if len(buffer) >= 15 or i == len(words) - 1:
-                yield buffer
-                buffer = ""
-                time.sleep(0.02)  # Small delay for visual streaming effect
-
-    st.write_stream(_stream_summary())
+    if result.master_summary and result.master_summary.strip():
+        st.markdown(result.master_summary)
+    else:
+        st.error(
+            "⚠️ The pipeline completed but produced an empty summary. "
+            "This usually means the Reduce (Executive Agent) API call "
+            "returned an empty response. Check your OpenRouter API key "
+            "and model availability."
+        )
+        st.code(f"Debug: result type = {type(result)}, "
+                f"summary length = {len(result.master_summary) if result.master_summary else 0}, "
+                f"critic = {bool(result.critic_feedback)}, "
+                f"consistent = {result.is_consistent}")
 
     # Critic feedback
     if result.critic_feedback:
@@ -514,7 +514,7 @@ if st.session_state.pipeline_result is not None:
     with col2:
         st.download_button(
             label="📥  Download Summary as Markdown",
-            data=result.master_summary,
+            data=result.master_summary or "No summary generated.",
             file_name="omniroute_summary.md",
             mime="text/markdown",
             use_container_width=True,
