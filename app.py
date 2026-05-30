@@ -434,6 +434,8 @@ if uploaded_file is not None and not st.session_state.is_processing:
 
         # Run the async pipeline
         try:
+            from modules.utils import logger
+            logger.info("Starting pipeline execution via run_until_complete")
             loop = asyncio.new_event_loop()
             result = loop.run_until_complete(
                 run_pipeline(
@@ -444,14 +446,16 @@ if uploaded_file is not None and not st.session_state.is_processing:
                 )
             )
             loop.close()
+            logger.info(f"Pipeline completed successfully. Result type: {type(result)}")
 
             st.session_state.pipeline_result = result
             progress_bar.progress(1.0, text="✅ Pipeline complete!")
             stage_container.empty()
             st.session_state.is_processing = False
-            st.rerun()
 
         except Exception as e:
+            from modules.utils import logger
+            logger.error(f"Pipeline failed with exception: {e}")
             st.session_state.is_processing = False
             progress_bar.empty()
             stage_container.empty()
