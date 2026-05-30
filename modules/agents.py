@@ -84,7 +84,7 @@ async def _run_fact_agent(model, chunk_text: str) -> dict:
     # For a truly robust system, we would use model.with_structured_output(), 
     # but we'll use a standard call for compatibility across different models.
     prompt = ChatPromptTemplate.from_messages([
-        ("system", FACT_AGENT_SYSTEM + "\n\nYou MUST respond ONLY with valid JSON matching this schema: {\"facts\": [\"...\"], \"key_entities\": [\"...\"], \"data_points\": [\"...\"]}"),
+        ("system", FACT_AGENT_SYSTEM + "\n\nYou MUST respond ONLY with valid JSON matching this schema: {{\"facts\": [\"...\"], \"key_entities\": [\"...\"], \"data_points\": [\"...\"]}}"),
         ("human", "Text to process:\n\n{text}")
     ])
     chain = prompt | model
@@ -221,11 +221,11 @@ You will be provided with a generated Master Summary and the original extracted 
 Your job is to verify that the Master Summary is accurate, consistent with the facts, and properly formatted.
 
 Output your evaluation as JSON:
-{
+{{
   "is_consistent": true/false,
   "quality_score": 1-10,
   "feedback": "Detailed explanation of any missing facts, contradictions, or formatting issues."
-}
+}}
 """
 
 @api_retry
