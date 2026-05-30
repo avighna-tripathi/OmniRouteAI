@@ -14,11 +14,18 @@ from dataclasses import dataclass
 from typing import Optional
 
 import streamlit as st
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate
 
 from modules.utils import logger, api_retry, ConcurrencyLimiter
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter configuration
+# ---------------------------------------------------------------------------
+
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 
 # ---------------------------------------------------------------------------
@@ -48,23 +55,25 @@ class ReduceOutput:
 # Model factory
 # ---------------------------------------------------------------------------
 
-def _get_flash_model(temperature: float = 0.1) -> ChatGoogleGenerativeAI:
-    """Gemini 2.0 Flash — fast, cost-efficient for parallel Map work."""
-    return ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash",
-        google_api_key=st.secrets["GEMINI_API_KEY"],
+def _get_flash_model(temperature: float = 0.1) -> ChatOpenAI:
+    """Gemini 2.0 Flash via OpenRouter — fastest for parallel Map work."""
+    return ChatOpenAI(
+        model="google/gemini-2.0-flash-001",
+        openai_api_key=st.secrets["OPENROUTER_API_KEY"],
+        openai_api_base=OPENROUTER_BASE_URL,
         temperature=temperature,
-        max_output_tokens=4096,
+        max_tokens=4096,
     )
 
 
-def _get_pro_model(temperature: float = 0.2) -> ChatGoogleGenerativeAI:
-    """Gemini 2.5 Flash — capable synthesis for Executive/Critic Reduce phase."""
-    return ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
-        google_api_key=st.secrets["GEMINI_API_KEY"],
+def _get_pro_model(temperature: float = 0.2) -> ChatOpenAI:
+    """Claude Sonnet via OpenRouter — best synthesis for Reduce phase."""
+    return ChatOpenAI(
+        model="anthropic/claude-sonnet-4",
+        openai_api_key=st.secrets["OPENROUTER_API_KEY"],
+        openai_api_base=OPENROUTER_BASE_URL,
         temperature=temperature,
-        max_output_tokens=16384,
+        max_tokens=16384,
     )
 
 

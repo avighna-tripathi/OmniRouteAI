@@ -11,11 +11,18 @@ import base64
 from dataclasses import dataclass
 
 import streamlit as st
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
 
 from modules.parser import ExtractedImage
 from modules.utils import logger, api_retry, ConcurrencyLimiter
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter configuration
+# ---------------------------------------------------------------------------
+
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 
 # ---------------------------------------------------------------------------
@@ -47,13 +54,14 @@ CAPTION_PROMPT = (
 )
 
 
-def _get_vision_model() -> ChatGoogleGenerativeAI:
-    """Initialize Gemini 2.0 Flash for vision (fast, cost-efficient)."""
-    return ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash",
-        google_api_key=st.secrets["GEMINI_API_KEY"],
+def _get_vision_model() -> ChatOpenAI:
+    """Gemini 2.0 Flash via OpenRouter for vision (fast, multimodal)."""
+    return ChatOpenAI(
+        model="google/gemini-2.0-flash-001",
+        openai_api_key=st.secrets["OPENROUTER_API_KEY"],
+        openai_api_base=OPENROUTER_BASE_URL,
         temperature=0.1,
-        max_output_tokens=1024,
+        max_tokens=1024,
     )
 
 
