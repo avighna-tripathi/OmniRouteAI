@@ -98,7 +98,10 @@ def _parse_pdf(file_bytes: bytes, filename: str) -> ParsedDocument:
     doc = fitz.open(stream=file_bytes, filetype="pdf")
     pages: list[PageContent] = []
 
-    for page_idx in range(len(doc)):
+    # Safe limits for massive documents
+    MAX_PAGES = min(len(doc), 200)  # Analyze up to 200 pages as per user request
+
+    for page_idx in range(MAX_PAGES):
         page = doc[page_idx]
         page_num = page_idx + 1
         pc = PageContent(page_number=page_num)

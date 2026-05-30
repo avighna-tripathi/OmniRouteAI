@@ -1,20 +1,10 @@
 """
-OmniRoute AI — Multi-Agent Definitions
-Defines the Specialist Topology (Fact Agent, Summary Agent) for the Map phase
-and the Executive + Critic Agents for the Reduce phase.
-
-All agents use LangChain with Google Generative AI.
-Tiered routing: Flash for Map, Pro for Reduce.
+Defines the multi-agent system for the Map and Reduce phases.
 """
-
-from __future__ import annotations
-
-import json
-from dataclasses import dataclass
 from typing import Optional
 
 import streamlit as st
-from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate
 
@@ -22,338 +12,260 @@ from modules.utils import logger, api_retry, ConcurrencyLimiter
 
 
 # ---------------------------------------------------------------------------
-# OpenRouter configuration
-# ---------------------------------------------------------------------------
-
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-
-
-# ---------------------------------------------------------------------------
 # Agent output structures
 # ---------------------------------------------------------------------------
 
-@dataclass
-class MapOutput:
-    """Structured output from the Map phase for a single chunk."""
+from pydantic import BaseModel, Field
+
+class FactExtractorOutput(BaseModel):
+    facts: list[str] = Field(description="List of isolated, atomic facts extracted from the text.")
+    key_entities: list[str] = Field(description="List of important people, organizations, or concepts.")
+    data_points: list[str] = Field(description="Any specific numbers, metrics, or statistics.")
+
+class MapOutput(BaseModel):
     chunk_id: int
     source_pages: list[int]
-    facts: list[str]        # Atomic factual evidence
-    summary: str            # Compressed localized summary
-    key_entities: list[str] # Named entities mentioned
-    data_points: list[str]  # Numbers, statistics, measurements
-
-
-@dataclass
-class ReduceOutput:
-    """Final output from the Reduce phase."""
-    master_summary: str
-    critic_feedback: str
-    is_consistent: bool
+    facts: list[str]
+    summary: str
 
 
 # ---------------------------------------------------------------------------
 # Model factory
 # ---------------------------------------------------------------------------
 
-def _get_flash_model(temperature: float = 0.1) -> ChatOpenAI:
-    """Gemini 2.0 Flash via OpenRouter — fastest for parallel Map work."""
-    return ChatOpenAI(
-        model="google/gemini-2.0-flash-001",
-        openai_api_key=st.secrets["OPENROUTER_API_KEY"],
-        openai_api_base=OPENROUTER_BASE_URL,
+def _get_flash_model(temperature: float = 0.1) -> ChatGoogleGenerativeAI:
+    """Gemini 2.0 Flash — fast, cost-efficient for parallel Map work."""
+    return ChatGoogleGenerativeAI(
+        model="gemini-2.0-flash",
+        google_api_key=st.secrets["GEMINI_API_KEY"],
         temperature=temperature,
-        max_tokens=4096,
+        max_output_tokens=4096,
     )
 
 
-def _get_pro_model(temperature: float = 0.2) -> ChatOpenAI:
-    """Claude Sonnet via OpenRouter — best synthesis for Reduce phase."""
-    return ChatOpenAI(
-        model="anthropic/claude-sonnet-4",
-        openai_api_key=st.secrets["OPENROUTER_API_KEY"],
-        openai_api_base=OPENROUTER_BASE_URL,
+def _get_pro_model(temperature: float = 0.2) -> ChatGoogleGenerativeAI:
+    """Gemini 2.5 Flash — capable synthesis for Executive/Critic Reduce phase."""
+    return ChatGoogleGenerativeAI(
+        model="gemini-2.5-flash",
+        google_api_key=st.secrets["GEMINI_API_KEY"],
         temperature=temperature,
-        max_tokens=16384,
+        max_output_tokens=16384,
     )
 
 
 # ---------------------------------------------------------------------------
-# Map Phase — Specialist Topology
+# Map Phase: Fact Agent
 # ---------------------------------------------------------------------------
 
-_map_limiter = ConcurrencyLimiter(max_concurrent=10)
+FACT_AGENT_SYSTEM = """You are a precise Fact Extraction Agent.
+Your job is to read the provided text chunk and extract structured information.
+Focus on capturing ALL hard facts, names, dates, metrics, and key statements.
+Never hallucinate or add outside knowledge.
 
-FACT_AGENT_SYSTEM = """You are the Fact Extraction Agent in a document analysis pipeline.
-Your job is to extract ALL atomic factual evidence from the given text chunk.
-
-Rules:
-- Extract every fact, figure, statistic, date, name, and data point.
-- Be exhaustive — missing a fact is a failure.
-- Each fact should be a single, self-contained statement.
-- Include page references when available.
-- Extract named entities (people, organizations, places, products).
-- Extract numerical data points separately.
-
-Respond in this exact JSON format:
-{
-  "facts": ["fact 1", "fact 2", ...],
-  "key_entities": ["entity 1", "entity 2", ...],
-  "data_points": ["data point 1", "data point 2", ...]
-}"""
-
-SUMMARY_AGENT_SYSTEM = """You are the Summary Compression Agent in a document analysis pipeline.
-Your job is to compress the given text chunk into a concise but complete summary.
-
-Rules:
-- Capture ALL key ideas — no information loss.
-- Preserve relationships between concepts.
-- Maintain factual accuracy.
-- Include references to images, charts, and tables described in the text.
-- The summary should be 20-30% of the original length.
-- Write in clear, professional prose.
-
-Respond with ONLY the summary text, no JSON or formatting."""
-
+Extract into three lists:
+1. facts: Complete sentences stating specific facts.
+2. key_entities: Names of people, companies, tools, etc.
+3. data_points: Specific numbers, percentages, financial figures.
+"""
 
 @api_retry
-async def _run_fact_agent(
-    model: ChatGoogleGenerativeAI,
-    chunk_text: str,
-) -> dict:
-    """Run the Fact Agent on a single chunk."""
-    async with _map_limiter:
-        messages = [
-            SystemMessage(content=FACT_AGENT_SYSTEM),
-            HumanMessage(content=f"Extract all facts from this text:\n\n{chunk_text}"),
-        ]
-        response = await model.ainvoke(messages)
-        raw = response.content.strip()
-
-        # Parse JSON response
-        try:
-            # Clean markdown code fences if present
-            if raw.startswith("```"):
-                raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
-                if raw.endswith("```"):
-                    raw = raw[:-3]
-                raw = raw.strip()
-            parsed = json.loads(raw)
-        except json.JSONDecodeError:
-            logger.warning(f"Fact Agent returned non-JSON, wrapping: {raw[:100]}…")
-            parsed = {
-                "facts": [raw],
-                "key_entities": [],
-                "data_points": [],
-            }
-
-        return parsed
-
-
-@api_retry
-async def _run_summary_agent(
-    model: ChatGoogleGenerativeAI,
-    chunk_text: str,
-) -> str:
-    """Run the Summary Agent on a single chunk."""
-    async with _map_limiter:
-        messages = [
-            SystemMessage(content=SUMMARY_AGENT_SYSTEM),
-            HumanMessage(content=f"Summarize this text:\n\n{chunk_text}"),
-        ]
-        response = await model.ainvoke(messages)
-        return response.content.strip()
-
-
-async def run_map_phase_single(
-    chunk_id: int,
-    chunk_text: str,
-    source_pages: list[int],
-    model: Optional[ChatGoogleGenerativeAI] = None,
-) -> MapOutput:
-    """
-    Run both Fact and Summary agents on a single chunk concurrently.
-    Returns structured MapOutput.
-    """
-    if model is None:
-        model = _get_flash_model()
-
-    import asyncio
-    fact_task = _run_fact_agent(model, chunk_text)
-    summary_task = _run_summary_agent(model, chunk_text)
-
-    fact_result, summary_result = await asyncio.gather(
-        fact_task, summary_task, return_exceptions=True
-    )
-
-    # Handle errors gracefully
-    if isinstance(fact_result, Exception):
-        logger.error(f"Fact Agent failed for chunk {chunk_id}: {fact_result}")
-        fact_result = {"facts": [], "key_entities": [], "data_points": []}
-    if isinstance(summary_result, Exception):
-        logger.error(f"Summary Agent failed for chunk {chunk_id}: {summary_result}")
-        summary_result = f"[Summary unavailable for chunk {chunk_id}]"
-
-    return MapOutput(
-        chunk_id=chunk_id,
-        source_pages=source_pages,
-        facts=fact_result.get("facts", []),
-        summary=summary_result,
-        key_entities=fact_result.get("key_entities", []),
-        data_points=fact_result.get("data_points", []),
-    )
-
-
-# ---------------------------------------------------------------------------
-# Reduce Phase — Executive Agent + Critic
-# ---------------------------------------------------------------------------
-
-EXECUTIVE_AGENT_SYSTEM = """You are the Executive Synthesis Agent in a document analysis pipeline.
-You receive structured outputs from multiple specialist agents who analyzed different sections of a large document.
-
-Your task is to produce a MASTER SUMMARY of exactly 3-5 pages (approximately 4500-7500 words).
-
-Rules:
-1. SYSTEMATIC MERGING: Process all intermediate outputs methodically. Do not skip any section.
-2. LOGICAL FLOW: Organize the summary with clear sections, headings, and logical transitions.
-3. ZERO INFORMATION LOSS: Every key fact, entity, and data point from the intermediate outputs must be represented.
-4. COHERENCE: Eliminate redundancy while maintaining completeness. Synthesize related facts from different sections.
-5. DATA INTEGRITY: Preserve all statistics, figures, dates, and named entities accurately.
-6. VISUAL CONTENT: Include references to images, charts, and tables where mentioned.
-7. STRUCTURE: Use markdown formatting with ## headings, bullet points, and bold for key terms.
-
-Produce ONLY the master summary in well-structured markdown format."""
-
-CRITIC_AGENT_SYSTEM = """You are the Critic Consistency Agent. You verify the quality and completeness of a master summary.
-
-You will receive:
-1. The master summary produced by the Executive Agent.
-2. A checklist of key facts, entities, and data points from the source material.
-
-Your task:
-1. Check if all major facts and entities are represented in the summary.
-2. Check for logical consistency and contradictions.
-3. Check that the summary is 3-5 pages (4500-7500 words).
-4. Rate the overall quality on a scale of 1-10.
-
-Respond in this exact JSON format:
-{
-  "is_consistent": true/false,
-  "quality_score": 8,
-  "missing_items": ["item1", "item2"],
-  "contradictions": ["contradiction1"],
-  "feedback": "Overall assessment text"
-}"""
-
-
-@api_retry
-async def run_executive_agent(
-    map_outputs: list[MapOutput],
-    document_name: str,
-) -> str:
-    """
-    Executive Agent: merges all Map outputs into a 3-5 page master summary.
-    Uses Gemini Pro for deep synthesis.
-    """
-    model = _get_pro_model()
-
-    # Prepare the structured input
-    sections = []
-    all_entities = set()
-    all_data_points = []
-
-    for mo in sorted(map_outputs, key=lambda x: x.chunk_id):
-        section = f"### Section {mo.chunk_id + 1} (Pages: {', '.join(map(str, mo.source_pages))})\n"
-        section += f"**Summary:** {mo.summary}\n\n"
-        if mo.facts:
-            section += "**Key Facts:**\n" + "\n".join(f"- {f}" for f in mo.facts) + "\n"
-        if mo.data_points:
-            section += "**Data Points:**\n" + "\n".join(f"- {d}" for d in mo.data_points) + "\n"
-        sections.append(section)
-        all_entities.update(mo.key_entities)
-        all_data_points.extend(mo.data_points)
-
-    intermediate_text = "\n---\n".join(sections)
-    entity_list = ", ".join(sorted(all_entities)[:100])  # Cap for prompt size
-
-    prompt = (
-        f"Document: {document_name}\n"
-        f"Total sections analyzed: {len(map_outputs)}\n"
-        f"Key entities found: {entity_list}\n\n"
-        f"=== INTERMEDIATE ANALYSIS OUTPUTS ===\n\n"
-        f"{intermediate_text}\n\n"
-        f"=== END OF INTERMEDIATE OUTPUTS ===\n\n"
-        f"Now produce the 3-5 page master summary following your instructions."
-    )
-
+async def _run_fact_agent(model, chunk_text: str) -> dict:
+    """Extracts facts from a chunk and returns a dictionary."""
     messages = [
-        SystemMessage(content=EXECUTIVE_AGENT_SYSTEM),
-        HumanMessage(content=prompt),
+        SystemMessage(content=FACT_AGENT_SYSTEM),
+        HumanMessage(content=f"Extract all facts from this text:\n\n{chunk_text}"),
     ]
-
-    response = await model.ainvoke(messages)
-    summary = response.content.strip()
-
-    logger.info(f"Executive Agent produced summary: {len(summary)} chars")
-    return summary
-
-
-@api_retry
-async def run_critic_agent(
-    master_summary: str,
-    map_outputs: list[MapOutput],
-) -> dict:
-    """
-    Critic Agent: checks consistency and completeness of the master summary.
-    Uses Gemini Pro.
-    """
-    model = _get_pro_model(temperature=0.1)
-
-    # Build fact checklist
-    all_facts = []
-    all_entities = set()
-    for mo in map_outputs:
-        all_facts.extend(mo.facts[:5])  # Sample facts per chunk
-        all_entities.update(mo.key_entities)
-
-    checklist = (
-        f"Key entities to verify: {', '.join(sorted(all_entities)[:50])}\n\n"
-        f"Sample facts to verify ({len(all_facts)} sampled):\n"
-        + "\n".join(f"- {f}" for f in all_facts[:50])
-    )
-
-    prompt = (
-        f"=== MASTER SUMMARY ===\n{master_summary}\n\n"
-        f"=== VERIFICATION CHECKLIST ===\n{checklist}\n\n"
-        f"Perform your consistency check now."
-    )
-
-    messages = [
-        SystemMessage(content=CRITIC_AGENT_SYSTEM),
-        HumanMessage(content=prompt),
-    ]
-
-    response = await model.ainvoke(messages)
-    raw = response.content.strip()
-
+    # We use a standard generation with strict JSON formatting instructions.
+    # For a truly robust system, we would use model.with_structured_output(), 
+    # but we'll use a standard call for compatibility across different models.
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", FACT_AGENT_SYSTEM + "\n\nYou MUST respond ONLY with valid JSON matching this schema: {\"facts\": [\"...\"], \"key_entities\": [\"...\"], \"data_points\": [\"...\"]}"),
+        ("human", "Text to process:\n\n{text}")
+    ])
+    chain = prompt | model
+    response = await chain.ainvoke({"text": chunk_text})
+    
+    # Simple JSON parsing with fallback
+    import json
+    raw = response.content
     try:
+        # Strip markdown code blocks if present
         if raw.startswith("```"):
-            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+            raw = raw.split("\n", 1)[1]
             if raw.endswith("```"):
                 raw = raw[:-3]
-            raw = raw.strip()
-        result = json.loads(raw)
+        raw = raw.strip()
+        parsed = json.loads(raw)
+        return parsed
     except json.JSONDecodeError:
-        logger.warning(f"Critic returned non-JSON: {raw[:200]}…")
-        result = {
+        logger.warning("Failed to parse JSON from Fact Agent. Returning raw as single fact.")
+        return {"facts": [raw], "key_entities": [], "data_points": []}
+
+
+# ---------------------------------------------------------------------------
+# Map Phase: Summary Agent
+# ---------------------------------------------------------------------------
+
+SUMMARY_AGENT_SYSTEM = """You are a highly efficient Summarization Agent.
+Read the provided chunk and write a concise, dense summary.
+Capture the main narrative and arguments. Target roughly 25% of the original length.
+Write in a professional, objective tone."""
+
+@api_retry
+async def _run_summary_agent(model, chunk_text: str) -> str:
+    """Generates a dense summary of a chunk."""
+    messages = [
+        SystemMessage(content=SUMMARY_AGENT_SYSTEM),
+        HumanMessage(content=f"Summarize this text:\n\n{chunk_text}"),
+    ]
+    response = await model.ainvoke(messages)
+    return response.content
+
+
+# ---------------------------------------------------------------------------
+# Map Phase Orchestrator
+# ---------------------------------------------------------------------------
+
+import asyncio
+
+# Limit concurrent API calls to avoid rate limits
+_map_limiter = ConcurrencyLimiter(max_concurrent=10)
+
+async def run_map_phase_single(chunk_id: int, chunk_text: str, source_pages: set[int], model: Optional[ChatGoogleGenerativeAI] = None) -> MapOutput:
+    """Runs both Map agents on a single chunk concurrently."""
+    if model is None:
+        model = _get_flash_model()
+        
+    async with _map_limiter:
+        fact_task = _run_fact_agent(model, chunk_text)
+        summary_task = _run_summary_agent(model, chunk_text)
+        
+        # Run both simultaneously
+        fact_result, summary_result = await asyncio.gather(
+            fact_task, summary_task, return_exceptions=True
+        )
+        
+        # Handle potential exceptions gracefully
+        facts = fact_result.get("facts", []) if isinstance(fact_result, dict) else [str(fact_result)]
+        summary = summary_result if isinstance(summary_result, str) else str(summary_result)
+        
+        if isinstance(fact_result, Exception):
+            logger.error(f"Fact Agent failed for chunk {chunk_id}: {fact_result}")
+            facts = []
+        if isinstance(summary_result, Exception):
+            logger.error(f"Summary Agent failed for chunk {chunk_id}: {summary_result}")
+            summary = "[Summarization failed]"
+            
+        return MapOutput(
+            chunk_id=chunk_id,
+            source_pages=list(source_pages),
+            facts=facts,
+            summary=summary,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Reduce Phase: Executive Agent
+# ---------------------------------------------------------------------------
+
+EXECUTIVE_SYSTEM = """You are the Executive Synthesis Agent.
+Your task is to take the extracted summaries and facts from multiple document sections and synthesize them into a cohesive, comprehensive master summary.
+The final document should be approximately 3 to 5 pages long.
+
+Requirements:
+- Organize with clear, logical markdown headings.
+- Include an Executive Summary at the top.
+- Synthesize facts intelligently — group related information even if it appeared in different sections.
+- Cite the source pages when discussing specific facts or data points (e.g., "[Page 4]").
+- Ensure smooth transitions between topics.
+- Do NOT simply paste the input sections. You must rewrite and synthesize.
+"""
+
+@api_retry
+async def run_executive_agent(map_outputs: list[MapOutput], document_name: str) -> str:
+    """Synthesizes all map outputs into the final master summary."""
+    model = _get_pro_model(temperature=0.3)  # Slightly higher temp for better narrative flow
+    
+    # Construct the massive prompt payload
+    payload = f"Document Name: {document_name}\n\n"
+    payload += "Below are the processed chunks from the document in chronological order.\n\n"
+    
+    for mo in sorted(map_outputs, key=lambda x: x.chunk_id):
+        payload += f"### Section {mo.chunk_id + 1} (Pages: {', '.join(map(str, mo.source_pages))})\n"
+        payload += f"**Summary:** {mo.summary}\n\n"
+        if mo.facts:
+            payload += "**Key Facts:**\n" + "\n".join(f"- {f}" for f in mo.facts) + "\n"
+        payload += "---\n\n"
+        
+    messages = [
+        SystemMessage(content=EXECUTIVE_SYSTEM),
+        HumanMessage(content=f"Synthesize the following document data into a 3-5 page master summary:\n\n{payload}")
+    ]
+    
+    logger.info("Sending payload to Executive Agent...")
+    response = await model.ainvoke(messages)
+    return response.content
+
+
+# ---------------------------------------------------------------------------
+# Reduce Phase: Critic Agent
+# ---------------------------------------------------------------------------
+
+CRITIC_SYSTEM = """You are the Quality Control Critic Agent.
+You will be provided with a generated Master Summary and the original extracted facts.
+Your job is to verify that the Master Summary is accurate, consistent with the facts, and properly formatted.
+
+Output your evaluation as JSON:
+{
+  "is_consistent": true/false,
+  "quality_score": 1-10,
+  "feedback": "Detailed explanation of any missing facts, contradictions, or formatting issues."
+}
+"""
+
+@api_retry
+async def run_critic_agent(master_summary: str, map_outputs: list[MapOutput]) -> dict:
+    """Evaluates the master summary against the raw facts."""
+    model = _get_pro_model(temperature=0.1)
+    
+    # Compile a checklist of all facts
+    all_facts = []
+    for mo in map_outputs:
+        all_facts.extend(mo.facts)
+        
+    # We only send a sample of facts if there are too many, to avoid context limits
+    import random
+    if len(all_facts) > 100:
+        sample_facts = random.sample(all_facts, 100)
+    else:
+        sample_facts = all_facts
+        
+    payload = "--- EXTRACTED FACTS CHECKLIST ---\n"
+    payload += "\n".join(f"- {f}" for f in sample_facts)
+    payload += "\n\n--- MASTER SUMMARY TO EVALUATE ---\n"
+    payload += master_summary
+    
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", CRITIC_SYSTEM),
+        ("human", "Evaluate this summary:\n\n{text}")
+    ])
+    chain = prompt | model
+    
+    response = await chain.ainvoke({"text": payload})
+    
+    # Parse JSON
+    import json
+    raw = response.content
+    try:
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1]
+            if raw.endswith("```"):
+                raw = raw[:-3]
+        return json.loads(raw.strip())
+    except json.JSONDecodeError:
+        logger.warning("Critic Agent returned invalid JSON.")
+        return {
             "is_consistent": True,
             "quality_score": 7,
-            "missing_items": [],
-            "contradictions": [],
-            "feedback": raw,
+            "feedback": f"Could not parse Critic response. Raw output:\n{raw}"
         }
-
-    logger.info(
-        f"Critic Agent: consistent={result.get('is_consistent')}, "
-        f"quality={result.get('quality_score')}/10"
-    )
-    return result
