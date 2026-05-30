@@ -1,5 +1,5 @@
 """
-Handles multimodal capabilities — describing extracted images using Gemini Vision.
+Handles multimodal capabilities — describing extracted images using Groq Vision.
 """
 import io
 import base64
@@ -7,7 +7,7 @@ import asyncio
 from dataclasses import dataclass
 
 import streamlit as st
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_groq import ChatGroq
 from langchain_core.messages import HumanMessage
 
 from modules.parser import ExtractedImage
@@ -36,21 +36,21 @@ CAPTION_PROMPT = (
 )
 
 
-def _get_vision_model() -> ChatGoogleGenerativeAI:
-    """Initialize Gemini 2.0 Flash for vision (fast, cost-efficient)."""
-    return ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash",
-        google_api_key=st.secrets["GEMINI_API_KEY"],
+def _get_vision_model() -> ChatGroq:
+    """Initialize Llama 3.2 Vision on Groq."""
+    return ChatGroq(
+        model="llama-3.2-11b-vision-preview",
+        api_key=st.secrets["GROQ_API_KEY"],
         temperature=0.1,
-        max_output_tokens=1024,
+        max_tokens=1024,
     )
 
 
-# Concurrency limiter to avoid hitting Gemini Vision rate limits
-_vision_limiter = ConcurrencyLimiter(max_concurrent=5)
+# Concurrency limiter to avoid hitting Groq Vision rate limits
+_vision_limiter = ConcurrencyLimiter(max_concurrent=3)
 
 @api_retry
-async def _caption_single_image(model: ChatGoogleGenerativeAI, image: ExtractedImage) -> CaptionedImage:
+async def _caption_single_image(model: ChatGroq, image: ExtractedImage) -> CaptionedImage:
     """Sends a single image to the Vision model to generate a descriptive caption."""
     b64_data = image.to_base64()
     
@@ -68,6 +68,7 @@ async def _caption_single_image(model: ChatGoogleGenerativeAI, image: ExtractedI
     )
     
     async with _vision_limiter:
+        await asyncio.sleep(1) # Slow down for Groq strict free limits
         logger.info(f"Generating caption for image on page {image.page_number}...")
         response = await model.ainvoke([message])
         
@@ -91,8 +92,8 @@ async def caption_images(images: list[ExtractedImage], progress_callback=None) -
     model = _get_vision_model()
     results: list[CaptionedImage] = []
     
-    # Process in batches to manage rate limits gracefully
-    batch_size = 5
+    # Process in very small batches to manage rate limits gracefully
+    batch_size = 3
     total = len(images)
     completed = 0
     
