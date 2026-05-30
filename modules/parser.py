@@ -99,7 +99,7 @@ def _parse_pdf(file_bytes: bytes, filename: str) -> ParsedDocument:
     pages: list[PageContent] = []
 
     # Safe limits for massive documents
-    MAX_PAGES = min(len(doc), 15)  # TEMPORARY LIMIT: 15 pages to test firewall timeout
+    MAX_PAGES = min(len(doc), 200)  # Analyze up to 200 pages
 
     for page_idx in range(MAX_PAGES):
         page = doc[page_idx]
