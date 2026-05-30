@@ -81,7 +81,7 @@ async def _caption_single_image(model: ChatGoogleGenerativeAI, image: ExtractedI
 # Orchestrator
 # ---------------------------------------------------------------------------
 
-async def caption_images(images: list[ExtractedImage]) -> list[CaptionedImage]:
+async def caption_images(images: list[ExtractedImage], progress_callback=None) -> list[CaptionedImage]:
     """
     Processes a list of extracted images concurrently, returning their captions.
     """
@@ -94,6 +94,7 @@ async def caption_images(images: list[ExtractedImage]) -> list[CaptionedImage]:
     # Process in batches to manage rate limits gracefully
     batch_size = 5
     total = len(images)
+    completed = 0
     
     for i in range(0, total, batch_size):
         batch = images[i:i + batch_size]
@@ -112,5 +113,9 @@ async def caption_images(images: list[ExtractedImage]) -> list[CaptionedImage]:
                 ))
             else:
                 results.append(result)
+                
+        completed += len(batch)
+        if progress_callback:
+            progress_callback(min(completed, total), total)
                 
     return results
