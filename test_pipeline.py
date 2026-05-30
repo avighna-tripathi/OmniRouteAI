@@ -95,10 +95,10 @@ def main():
             print(f"      Processing chunk {c.chunk_id}...", end=" ", flush=True)
             try:
                 result = await run_map_phase_single(c.chunk_id, c.text, c.source_pages, model)
-                print(f"✅ facts={len(result.facts)}, summary={len(result.summary)} chars")
+                print(f"[OK] facts={len(result.facts)}, summary={len(result.summary)} chars")
                 results.append(result)
             except Exception as e:
-                print(f"❌ {e}")
+                print(f"[FAIL] {e}")
         return results
     
     map_outputs = asyncio.run(do_map())
