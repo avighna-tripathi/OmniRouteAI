@@ -47,7 +47,7 @@ def _get_vision_model() -> ChatGoogleGenerativeAI:
 
 
 # Concurrency limiter to avoid hitting Gemini rate limits
-_vision_limiter = ConcurrencyLimiter(max_concurrent=10)
+_vision_limiter = ConcurrencyLimiter(max_concurrent=2)
 
 @api_retry
 async def _caption_single_image(model: ChatGoogleGenerativeAI, image: ExtractedImage) -> CaptionedImage:
@@ -68,6 +68,7 @@ async def _caption_single_image(model: ChatGoogleGenerativeAI, image: ExtractedI
     )
     
     async with _vision_limiter:
+        await asyncio.sleep(2)  # Pace requests to respect free tier 15 RPM limit
         logger.info(f"Generating caption for image on page {image.page_number}...")
         response = await model.ainvoke([message])
         
@@ -92,7 +93,7 @@ async def caption_images(images: list[ExtractedImage], progress_callback=None) -
     results: list[CaptionedImage] = []
     
     # Process in batches to manage rate limits gracefully
-    batch_size = 10
+    batch_size = 2
     total = len(images)
     completed = 0
     

@@ -298,7 +298,7 @@ st.markdown("""
     <div class="hero-badge">⚡ Agentic Multi-Agent RAG</div>
     <div class="hero-title">OmniRoute AI</div>
     <div class="hero-subtitle">
-        Zero-loss document intelligence — transforms 200-page documents into
+        Zero-loss document intelligence — transforms 15-page documents into
         precise 3–5 page summaries using a multi-agent Map-Reduce pipeline.
     </div>
 </div>
@@ -338,7 +338,7 @@ with st.sidebar:
     uploaded_file = st.file_uploader(
         "Upload your document",
         type=["pdf", "docx", "txt"],
-        help="Supports PDF, Word (.docx), and plain text files up to 200 pages.",
+        help="Supports PDF, Word (.docx), and plain text files up to 15 pages.",
         label_visibility="collapsed",
     )
 
@@ -660,7 +660,7 @@ if uploaded_file is None and st.session_state.pipeline_result is None:
         </div>
         <div style="color: var(--text-secondary); font-size: 0.9rem;">
             Supports PDF, Word (.docx), and plain text files.<br/>
-            Documents up to 200 pages will be processed with zero content loss.
+            Documents up to 15 pages will be processed with zero content loss (Optimized for free tier rate limits).
         </div>
     </div>
     """, unsafe_allow_html=True)
