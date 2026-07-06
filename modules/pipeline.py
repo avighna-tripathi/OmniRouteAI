@@ -184,9 +184,11 @@ async def run_pipeline(
     map_outputs: list[MapOutput] = []
     completed_chunks = 0
 
-    # Process in batches of 10 for rate-limit safety
-    batch_size = 10
+    # Process in batches of 2 for rate-limit safety on Google Gemini free tier
+    batch_size = 2
     for batch_start in range(0, len(chunks), batch_size):
+        if batch_start > 0:
+            await asyncio.sleep(3)  # Pause between batches to stay under 15 RPM limit
         batch = chunks[batch_start:batch_start + batch_size]
 
         tasks = [

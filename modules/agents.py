@@ -127,7 +127,7 @@ async def _run_summary_agent(model, chunk_text: str) -> str:
 import asyncio
 
 # Note: Gemini free tier has strict RPM limits. ConcurrencyLimiter controls burst rate.
-_map_limiter = ConcurrencyLimiter(max_concurrent=2)
+_map_limiter = ConcurrencyLimiter(max_concurrent=1)
 
 async def run_map_phase_single(chunk_id: int, chunk_text: str, source_pages: set[int], model: Optional[ChatGoogleGenerativeAI] = None) -> MapOutput:
     """Runs both Map agents on a single chunk concurrently."""
