@@ -98,8 +98,8 @@ def _parse_pdf(file_bytes: bytes, filename: str) -> ParsedDocument:
     doc = fitz.open(stream=file_bytes, filetype="pdf")
     pages: list[PageContent] = []
 
-    # Safe limits for massive documents
-    MAX_PAGES = min(len(doc), 15)  # Analyze up to 15 pages (Optimized for free tier rate limits)
+    # Safe limits for large documents — OpenRouter free tier has no daily quota cap
+    MAX_PAGES = min(len(doc), 60)  # Analyze up to 60 pages
 
     for page_idx in range(MAX_PAGES):
         page = doc[page_idx]
