@@ -1,8 +1,6 @@
 """
 Handles multimodal capabilities — describing extracted images using Gemini Vision.
 """
-import io
-import base64
 import asyncio
 from dataclasses import dataclass
 
@@ -11,7 +9,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage
 
 from modules.parser import ExtractedImage
-from modules.utils import logger, api_retry, ConcurrencyLimiter
+from modules.utils import logger, api_retry
 
 
 # ---------------------------------------------------------------------------
@@ -42,18 +40,15 @@ def _get_vision_model() -> ChatGoogleGenerativeAI:
         model="gemini-2.0-flash",
         google_api_key=st.secrets["GEMINI_API_KEY"],
         temperature=0.1,
-        max_retries=6,
+        max_retries=3,
     )
 
-
-# Concurrency limiter to avoid hitting Gemini rate limits
-_vision_limiter = ConcurrencyLimiter(max_concurrent=2)
 
 @api_retry
 async def _caption_single_image(model: ChatGoogleGenerativeAI, image: ExtractedImage) -> CaptionedImage:
     """Sends a single image to the Vision model to generate a descriptive caption."""
     b64_data = image.to_base64()
-    
+
     # LangChain multimodal message format
     message = HumanMessage(
         content=[
@@ -66,12 +61,10 @@ async def _caption_single_image(model: ChatGoogleGenerativeAI, image: ExtractedI
             },
         ]
     )
-    
-    async with _vision_limiter:
-        await asyncio.sleep(2)  # Pace requests to respect free tier 15 RPM limit
-        logger.info(f"Generating caption for image on page {image.page_number}...")
-        response = await model.ainvoke([message])
-        
+
+    logger.info(f"Generating caption for image on page {image.page_number}...")
+    response = await model.ainvoke([message])
+
     return CaptionedImage(
         page_number=image.page_number,
         caption=f"[Image on page {image.page_number}]: {response.content}"
@@ -79,44 +72,37 @@ async def _caption_single_image(model: ChatGoogleGenerativeAI, image: ExtractedI
 
 
 # ---------------------------------------------------------------------------
-# Orchestrator
+# Orchestrator — fully sequential, no Semaphore (avoids event-loop deadlocks)
 # ---------------------------------------------------------------------------
 
 async def caption_images(images: list[ExtractedImage], progress_callback=None) -> list[CaptionedImage]:
     """
-    Processes a list of extracted images concurrently, returning their captions.
+    Processes extracted images one-by-one with a sleep delay between each call.
+    Sequential approach avoids asyncio.Semaphore cross-event-loop deadlocks.
     """
     if not images:
         return []
 
     model = _get_vision_model()
     results: list[CaptionedImage] = []
-    
-    # Process in batches to manage rate limits gracefully
-    batch_size = 2
     total = len(images)
-    completed = 0
-    
-    for i in range(0, total, batch_size):
-        batch = images[i:i + batch_size]
-        tasks = [_caption_single_image(model, img) for img in batch]
-        
-        # Run batch concurrently
-        batch_results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        for j, result in enumerate(batch_results):
-            if isinstance(result, Exception):
-                logger.error(f"Failed to caption image on page {batch[j].page_number}: {result}")
-                # Fallback to empty caption so pipeline doesn't break
-                results.append(CaptionedImage(
-                    page_number=batch[j].page_number,
-                    caption=f"[Image on page {batch[j].page_number} — captioning failed due to API error]"
-                ))
-            else:
-                results.append(result)
-                
-        completed += len(batch)
+
+    for idx, image in enumerate(images):
+        # Pace calls to respect Gemini free-tier 15 RPM limit
+        if idx > 0:
+            await asyncio.sleep(4)
+
+        try:
+            result = await _caption_single_image(model, image)
+            results.append(result)
+        except Exception as e:
+            logger.error(f"Failed to caption image on page {image.page_number}: {e}")
+            results.append(CaptionedImage(
+                page_number=image.page_number,
+                caption=f"[Image on page {image.page_number} — captioning failed due to API error]"
+            ))
+
         if progress_callback:
-            progress_callback(min(completed, total), total)
-                
+            progress_callback(idx + 1, total)
+
     return results

@@ -184,46 +184,32 @@ async def run_pipeline(
     map_outputs: list[MapOutput] = []
     completed_chunks = 0
 
-    # Process in batches of 2 for rate-limit safety on Google Gemini free tier
-    batch_size = 2
-    for batch_start in range(0, len(chunks), batch_size):
-        if batch_start > 0:
-            await asyncio.sleep(3)  # Pause between batches to stay under 15 RPM limit
-        batch = chunks[batch_start:batch_start + batch_size]
-
-        tasks = [
-            run_map_phase_single(
-                chunk_id=c.chunk_id,
-                chunk_text=c.text,
-                source_pages=c.source_pages,
+    # Process chunks sequentially — avoids asyncio.Semaphore cross-loop deadlocks
+    # Sleep is handled inside run_map_phase_single to pace free-tier RPM limits
+    for chunk in chunks:
+        try:
+            output = await run_map_phase_single(
+                chunk_id=chunk.chunk_id,
+                chunk_text=chunk.text,
+                source_pages=chunk.source_pages,
                 model=fast_model,
             )
-            for c in batch
-        ]
+            map_outputs.append(output)
+        except Exception as e:
+            logger.error(f"Map phase failed for chunk {chunk.chunk_id}: {e}")
+            map_outputs.append(MapOutput(
+                chunk_id=chunk.chunk_id,
+                source_pages=chunk.source_pages,
+                facts=[],
+                summary=f"[Processing failed for chunk {chunk.chunk_id}]",
+            ))
 
-        batch_results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for i, result in enumerate(batch_results):
-            if isinstance(result, Exception):
-                logger.error(f"Map phase failed for chunk {batch[i].chunk_id}: {result}")
-                # Create minimal fallback output
-                map_outputs.append(MapOutput(
-                    chunk_id=batch[i].chunk_id,
-                    source_pages=batch[i].source_pages,
-                    facts=[],
-                    summary=f"[Processing failed for chunk {batch[i].chunk_id}]",
-                    key_entities=[],
-                    data_points=[],
-                ))
-            else:
-                map_outputs.append(result)
-
-            completed_chunks += 1
-            _update(
-                "map_phase",
-                completed_chunks / len(chunks),
-                f"🔬 Map phase: {completed_chunks}/{len(chunks)} chunks processed",
-            )
+        completed_chunks += 1
+        _update(
+            "map_phase",
+            completed_chunks / len(chunks),
+            f"🔬 Map phase: {completed_chunks}/{len(chunks)} chunks processed",
+        )
 
     total_facts = sum(len(mo.facts) for mo in map_outputs)
     progress.stats["total_facts_extracted"] = total_facts
