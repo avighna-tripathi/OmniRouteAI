@@ -150,7 +150,11 @@ async def run_pipeline(
         def vision_progress(completed, total):
             _update("vision", completed / total, f"🖼️ Captioned {completed}/{total} images")
 
-        captions = await caption_images(images, progress_callback=vision_progress)
+        try:
+            captions = await caption_images(images, progress_callback=vision_progress)
+        except Exception as e:
+            logger.error(f"Vision captioning failed across document: {e}. Continuing without image captions.")
+            captions = []
     else:
         logger.info("No images found in document.")
 
