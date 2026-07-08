@@ -368,10 +368,12 @@ with st.sidebar:
     st.markdown("""
     | Phase | Model |
     |-------|-------|
-    | Map (Fact/Summary) | `Gemini 2.0 Flash` |
-    | Reduce (Executive) | `Gemini 2.5 Flash` |
-    | Critic | `Gemini 2.5 Flash` |
-    | Vision | `Gemini 2.0 Flash` |
+    | Map (Fact/Summary) | `Llama 3.1 8B` |
+    | Reduce (Executive) | `Gemma 3 12B` |
+    | Critic | `Gemma 3 12B` |
+    | Vision | `Llama 3.2 Vision 11B` |
+
+    *Powered by OpenRouter (Free Tier)*
     """)
 
     st.markdown("---")
