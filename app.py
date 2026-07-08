@@ -366,14 +366,14 @@ with st.sidebar:
     st.markdown("---")
     st.markdown('<div class="sidebar-section-title">🏗️ Architecture</div>', unsafe_allow_html=True)
     st.markdown("""
-    | Phase | Model |
-    |-------|-------|
-    | Map (Fact/Summary) | `Gemma 4 26B` |
-    | Reduce (Executive) | `Qwen3 Coder 480B` |
-    | Critic | `Qwen3 Coder 480B` |
+    | Phase | Model Pool (Auto-Fallback) |
+    |-------|----------------------------|
+    | Map (Fact/Summary) | `Llama 3.2 3B / Gemma 4 / Nemotron` |
+    | Reduce (Executive) | `Qwen3 480B / Llama 70B / Hermes` |
+    | Critic | `Qwen3 480B / Llama 70B / Hermes` |
     | Vision | `Nemotron Nano 12B VL` |
 
-    *Powered by OpenRouter (Free Tier)*
+    *Powered by OpenRouter (Multi-Model Pool)*
     """)
 
     st.markdown("---")
