@@ -28,12 +28,13 @@ logger = logging.getLogger("omniroute")
 # Retry decorator for all Gemini / LangChain API calls
 # ---------------------------------------------------------------------------
 
-def get_retry_decorator(max_attempts: int = 6, min_wait: int = 2, max_wait: int = 60):
+def get_retry_decorator(max_attempts: int = 5, min_wait: int = 35, max_wait: int = 120):
     """
-    Returns a tenacity retry decorator configured for Google API rate limits.
+    Returns a tenacity retry decorator configured for OpenRouter free tier rate limits.
 
-    Uses exponential backoff: wait 2s, 4s, 8s, 16s, 32s, 60s (capped).
-    Retries on generic Exceptions (covers ResourceExhausted, 429, 503, etc.).
+    Free models return Retry-After: 30s on 429s, so we wait at least 35s to be safe.
+    Uses exponential backoff: 35s, 70s, 120s (capped).
+    Retries on generic Exceptions (covers RateLimitError, 429, 503, etc.).
     """
     return retry(
         stop=stop_after_attempt(max_attempts),

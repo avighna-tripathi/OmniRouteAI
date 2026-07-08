@@ -368,7 +368,7 @@ with st.sidebar:
     st.markdown("""
     | Phase | Model |
     |-------|-------|
-    | Map (Fact/Summary) | `Llama 3.3 70B` |
+    | Map (Fact/Summary) | `Gemma 4 26B` |
     | Reduce (Executive) | `Qwen3 Coder 480B` |
     | Critic | `Qwen3 Coder 480B` |
     | Vision | `Nemotron Nano 12B VL` |

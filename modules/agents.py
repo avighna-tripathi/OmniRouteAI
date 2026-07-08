@@ -26,7 +26,7 @@ from modules.utils import logger, api_retry
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 # Free models on OpenRouter — selected from your active free-tier list
-MODEL_FAST   = "meta-llama/llama-3.3-70b-instruct:free"         # Map phase — best free text model
+MODEL_FAST   = "google/gemma-4-26b-a4b-it:free"                 # Map phase — Gemma 4 26B (less congested)
 MODEL_PRO    = "qwen/qwen3-coder-480b-a35b-instruct:free"       # Reduce/Critic — 480B deep reasoner
 MODEL_VISION = "nvidia/nemotron-nano-12b-v2-vl:free"            # Vision — only free VL model
 
@@ -161,7 +161,7 @@ async def run_map_phase_single(
     if model is None:
         model = _get_fast_model()
 
-    await asyncio.sleep(2)  # Pace requests under OpenRouter free-tier RPM
+    await asyncio.sleep(8)  # Pace requests — respect 30s upstream cooldown on free models
 
     logger.info(f"Map phase: processing chunk {chunk_id}...")
 
@@ -174,7 +174,7 @@ async def run_map_phase_single(
         facts = []
 
     # Sleep between fact and summary calls
-    await asyncio.sleep(2)
+    await asyncio.sleep(8)
 
     # Summary agent
     try:

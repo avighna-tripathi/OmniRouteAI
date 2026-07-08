@@ -97,7 +97,7 @@ async def caption_images(images: list[ExtractedImage], progress_callback=None) -
 
     for idx, image in enumerate(images):
         if idx > 0:
-            await asyncio.sleep(3)  # Pace calls under OpenRouter free-tier RPM
+            await asyncio.sleep(8)  # Respect 30s upstream cooldown on free vision models
 
         try:
             result = await _caption_single_image(model, image)
