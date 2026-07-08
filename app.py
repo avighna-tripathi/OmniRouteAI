@@ -368,10 +368,10 @@ with st.sidebar:
     st.markdown("""
     | Phase | Model |
     |-------|-------|
-    | Map (Fact/Summary) | `Llama 3.1 8B` |
-    | Reduce (Executive) | `Gemma 3 12B` |
-    | Critic | `Gemma 3 12B` |
-    | Vision | `Llama 3.2 Vision 11B` |
+    | Map (Fact/Summary) | `Llama 3.3 70B` |
+    | Reduce (Executive) | `Qwen3 Coder 480B` |
+    | Critic | `Qwen3 Coder 480B` |
+    | Vision | `Nemotron Nano 12B VL` |
 
     *Powered by OpenRouter (Free Tier)*
     """)

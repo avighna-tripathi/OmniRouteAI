@@ -14,7 +14,7 @@ from modules.utils import logger, api_retry
 
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-MODEL_VISION = "meta-llama/llama-3.2-11b-vision-instruct:free"
+MODEL_VISION = "nvidia/nemotron-nano-12b-v2-vl:free"   # Only free VL model in the free list
 
 
 # ---------------------------------------------------------------------------

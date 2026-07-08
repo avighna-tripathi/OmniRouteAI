@@ -25,10 +25,10 @@ from modules.utils import logger, api_retry
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
-# Free models on OpenRouter (no daily cap, ~20 RPM)
-MODEL_FAST   = "meta-llama/llama-3.1-8b-instruct:free"   # Map phase (fast)
-MODEL_PRO    = "google/gemma-3-12b-it:free"               # Reduce / Critic
-MODEL_VISION = "meta-llama/llama-3.2-11b-vision-instruct:free"  # Images
+# Free models on OpenRouter — selected from your active free-tier list
+MODEL_FAST   = "meta-llama/llama-3.3-70b-instruct:free"         # Map phase — best free text model
+MODEL_PRO    = "qwen/qwen3-coder-480b-a35b-instruct:free"       # Reduce/Critic — 480B deep reasoner
+MODEL_VISION = "nvidia/nemotron-nano-12b-v2-vl:free"            # Vision — only free VL model
 
 
 # ---------------------------------------------------------------------------
