@@ -12,13 +12,14 @@ Orchestrates the full Map-Reduce pipeline:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from modules.parser import parse_document, ParsedDocument
 from modules.vision import caption_images, CaptionedImage
-from modules.table_store import store_tables
+from modules.table_store import store_images, store_tables
 from modules.chunker import chunk_document, ProcessedChunk
 from modules.agents import (
     MapOutput,
@@ -26,7 +27,6 @@ from modules.agents import (
     run_map_phase_single,
     run_executive_agent,
     run_critic_agent,
-    _get_fast_model,
 )
 from modules.utils import logger
 
@@ -83,6 +83,9 @@ async def run_pipeline(
     filename: str,
     progress_callback: Optional[Callable[[PipelineProgress], None]] = None,
     session_id: Optional[str] = None,
+    max_pages: int = 30,
+    chunk_size: int = 4000,
+    chunk_overlap: int = 400,
 ) -> ReduceOutput:
     """
     Execute the full OmniRoute AI pipeline.
@@ -96,6 +99,9 @@ async def run_pipeline(
     Returns:
         ReduceOutput with master_summary, critic_feedback, and consistency flag.
     """
+    if max_pages < 1 or max_pages > 200:
+        raise ValueError("max_pages must be between 1 and 200")
+    document_id = hashlib.sha256(file_bytes).hexdigest()[:24]
     progress = PipelineProgress()
 
     def _update(stage: str, stage_pct: float, msg: str):
@@ -112,9 +118,11 @@ async def run_pipeline(
     _update("parsing", 0.0, "📄 Parsing document…")
     logger.info(f"Pipeline started for '{filename}'")
 
-    parsed_doc: ParsedDocument = parse_document(file_bytes, filename)
+    parsed_doc: ParsedDocument = parse_document(file_bytes, filename, max_pages=max_pages)
 
     progress.stats["total_pages"] = parsed_doc.total_pages
+    progress.stats["source_page_count"] = parsed_doc.source_page_count or parsed_doc.total_pages
+    progress.stats["pages_truncated"] = parsed_doc.is_truncated
     progress.stats["total_images"] = len(parsed_doc.all_images)
     progress.stats["total_tables"] = len(parsed_doc.all_tables)
 
@@ -129,7 +137,7 @@ async def run_pipeline(
     tables_stored = 0
     if tables:
         try:
-            tables_stored = store_tables(tables, filename, session_id)
+            tables_stored = store_tables(tables, filename, session_id, document_id=document_id)
         except Exception as e:
             logger.error(f"MongoDB table storage failed: {e}")
             # Non-fatal: continue pipeline, tables still referenced in text
@@ -138,12 +146,22 @@ async def run_pipeline(
     progress.stats["tables_stored"] = tables_stored
     _update("tables", 1.0, f"✅ {tables_stored} tables stored")
 
+    # Store original image bytes in GridFS before vision processing so a
+    # captioning failure never means the image itself was lost.
+    images = parsed_doc.all_images
+    images_stored = 0
+    if images:
+        try:
+            images_stored = store_images(images, filename, session_id, document_id=document_id)
+        except Exception as e:
+            logger.error(f"MongoDB image storage failed: {e}")
+    progress.stats["images_stored"] = images_stored
+
     # ===================================================================
     # STAGE 3: Caption Images with Gemini Vision
     # ===================================================================
     _update("vision", 0.0, "🖼️ Captioning images with Gemini Vision…")
 
-    images = parsed_doc.all_images
     captions: list[CaptionedImage] = []
 
     if images:
@@ -166,7 +184,12 @@ async def run_pipeline(
     # ===================================================================
     _update("chunking", 0.0, "✂️ Chunking document…")
 
-    chunks: list[ProcessedChunk] = chunk_document(parsed_doc, captions)
+    chunks: list[ProcessedChunk] = chunk_document(
+        parsed_doc,
+        captions,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+    )
 
     progress.stats["total_chunks"] = len(chunks)
     _update("chunking", 1.0, f"✅ {len(chunks)} chunks created")
@@ -177,6 +200,7 @@ async def run_pipeline(
             master_summary="⚠️ The document appears to be empty or could not be parsed.",
             critic_feedback="No content to analyze.",
             is_consistent=False,
+            stats=progress.stats,
         )
 
     # ===================================================================
@@ -184,7 +208,6 @@ async def run_pipeline(
     # ===================================================================
     _update("map_phase", 0.0, f"🔬 Running Map phase on {len(chunks)} chunks…")
 
-    fast_model = _get_fast_model()
     map_outputs: list[MapOutput] = []
     completed_chunks = 0
 
@@ -196,7 +219,7 @@ async def run_pipeline(
                 chunk_id=chunk.chunk_id,
                 chunk_text=chunk.text,
                 source_pages=chunk.source_pages,
-                model=fast_model,
+                model=None,
             )
             map_outputs.append(output)
         except Exception as e:
@@ -276,4 +299,6 @@ async def run_pipeline(
         master_summary=master_summary,
         critic_feedback=feedback,
         is_consistent=is_consistent,
+        quality_score=quality_score,
+        stats=progress.stats,
     )

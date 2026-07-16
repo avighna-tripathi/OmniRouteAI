@@ -25,6 +25,8 @@ MODEL_VISION = "nvidia/nemotron-nano-12b-v2-vl:free"   # Only free VL model in t
 class CaptionedImage:
     page_number: int
     caption: str
+    image_id: str = ""
+    occurrence: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +77,9 @@ async def _caption_single_image(model: ChatOpenAI, image: ExtractedImage) -> Cap
 
     return CaptionedImage(
         page_number=image.page_number,
-        caption=f"[Image on page {image.page_number}]: {response.content}"
+        caption=f"[Image on page {image.page_number}]: {response.content}",
+        image_id=image.image_id,
+        occurrence=image.occurrence,
     )
 
 
@@ -94,13 +98,24 @@ async def caption_images(images: list[ExtractedImage], progress_callback=None) -
     model = _get_vision_model()
     results: list[CaptionedImage] = []
     total = len(images)
+    delay = float(st.secrets.get("VISION_REQUEST_DELAY_SECONDS", 1.0))
+    caption_cache: dict[str, str] = {}
 
     for idx, image in enumerate(images):
-        if idx > 0:
-            await asyncio.sleep(8)  # Respect 30s upstream cooldown on free vision models
+        if idx > 0 and delay > 0:
+            await asyncio.sleep(delay)
 
         try:
-            result = await _caption_single_image(model, image)
+            if image.image_id in caption_cache:
+                result = CaptionedImage(
+                    page_number=image.page_number,
+                    caption=caption_cache[image.image_id],
+                    image_id=image.image_id,
+                    occurrence=image.occurrence,
+                )
+            else:
+                result = await _caption_single_image(model, image)
+                caption_cache[image.image_id] = result.caption
             results.append(result)
         except Exception as e:
             logger.error(f"Failed to caption image on page {image.page_number}: {e}")

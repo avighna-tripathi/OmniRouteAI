@@ -338,12 +338,21 @@ with st.sidebar:
     uploaded_file = st.file_uploader(
         "Upload your document",
         type=["pdf", "docx", "txt"],
-        help="Supports PDF, Word (.docx), and plain text files up to 60 pages.",
+        help="Supports PDF, Word (.docx), and plain text files. Free-tier default is 30 pages; production runs can use up to 200.",
         label_visibility="collapsed",
     )
 
     st.markdown("---")
     st.markdown('<div class="sidebar-section-title">⚙️ Pipeline Configuration</div>', unsafe_allow_html=True)
+
+    max_pages = st.slider(
+        "Pages to process",
+        min_value=1,
+        max_value=200,
+        value=30,
+        step=1,
+        help="Limits provider/API usage and records any unprocessed pages.",
+    )
 
     chunk_size = st.slider(
         "Chunk Size (characters)",
@@ -445,6 +454,9 @@ if uploaded_file is not None and not st.session_state.is_processing:
                     filename=filename,
                     progress_callback=update_progress,
                     session_id=st.session_state.session_id,
+                    max_pages=max_pages,
+                    chunk_size=chunk_size,
+                    chunk_overlap=chunk_overlap,
                 )
             )
             loop.close()
@@ -474,6 +486,19 @@ elif st.session_state.is_processing:
 
 if st.session_state.pipeline_result is not None:
     result = st.session_state.pipeline_result
+
+    stats = getattr(result, "stats", {}) or {}
+    if stats:
+        st.markdown(
+            " | ".join([
+                f"**Pages:** {stats.get('total_pages', '?')}/{stats.get('source_page_count', stats.get('total_pages', '?'))}",
+                f"**Images:** {stats.get('images_stored', 0)}/{stats.get('total_images', 0)} stored",
+                f"**Tables:** {stats.get('tables_stored', 0)}/{stats.get('total_tables', 0)} stored",
+                f"**Chunks:** {stats.get('total_chunks', 0)}",
+            ])
+        )
+        if stats.get("pages_truncated"):
+            st.warning("This run was intentionally limited by the selected page limit; the remaining source pages were not sent to the API.")
 
     # Consistency banner
     if result.is_consistent:
@@ -662,7 +687,7 @@ if uploaded_file is None and st.session_state.pipeline_result is None:
         </div>
         <div style="color: var(--text-secondary); font-size: 0.9rem;">
             Supports PDF, Word (.docx), and plain text files.<br/>
-            Documents up to 60 pages are fully processed with zero content loss.
+            Documents up to 200 pages are supported; free-tier runs default to 30 pages and show any intentional truncation.
         </div>
     </div>
     """, unsafe_allow_html=True)

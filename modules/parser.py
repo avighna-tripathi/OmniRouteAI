@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import io
 import base64
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 import fitz  # PyMuPDF
 from docx import Document as DocxDocument
-from docx.table import Table as DocxTable
+from docx.oxml.ns import qn
 from PIL import Image
 
 from modules.utils import logger
@@ -32,9 +33,17 @@ class ExtractedImage:
     mime_type: str  # e.g. "image/png"
     width: int = 0
     height: int = 0
+    image_id: str = ""
+    occurrence: int = 0
 
     def to_base64(self) -> str:
         return base64.b64encode(self.image_bytes).decode("utf-8")
+
+    def __post_init__(self) -> None:
+        # A stable id lets us deduplicate vision calls while still preserving
+        # every occurrence in the parsed document and in storage.
+        if not self.image_id:
+            self.image_id = hashlib.sha256(self.image_bytes).hexdigest()[:24]
 
 
 @dataclass
@@ -43,16 +52,26 @@ class ExtractedTable:
     page_number: int
     table_data: list[list[str]]  # rows × cols
     source_file: str = ""
+    table_index: int = 0
 
     def to_mongo_dict(self) -> dict:
         """Serialize for MongoDB insertion."""
         headers = self.table_data[0] if self.table_data else []
         rows = self.table_data[1:] if len(self.table_data) > 1 else []
+        # Mongo document keys cannot be duplicated. Preserve the original
+        # matrix in `raw`, while making the convenience row objects safe.
+        safe_headers: list[str] = []
+        seen: dict[str, int] = {}
+        for idx, header in enumerate(headers):
+            name = str(header).strip() or f"column_{idx + 1}"
+            seen[name] = seen.get(name, 0) + 1
+            safe_headers.append(name if seen[name] == 1 else f"{name}_{seen[name]}")
         return {
             "page_number": self.page_number,
+            "table_index": self.table_index,
             "source_file": self.source_file,
-            "headers": headers,
-            "rows": [dict(zip(headers, row)) for row in rows] if headers else rows,
+            "headers": safe_headers,
+            "rows": [dict(zip(safe_headers, row)) for row in rows] if safe_headers else rows,
             "raw": self.table_data,
         }
 
@@ -72,6 +91,8 @@ class ParsedDocument:
     filename: str
     total_pages: int
     pages: list[PageContent] = field(default_factory=list)
+    source_page_count: Optional[int] = None
+    page_limit: Optional[int] = None
 
     @property
     def all_images(self) -> list[ExtractedImage]:
@@ -85,12 +106,16 @@ class ParsedDocument:
     def full_text(self) -> str:
         return "\n\n".join(p.text for p in self.pages if p.text)
 
+    @property
+    def is_truncated(self) -> bool:
+        return bool(self.source_page_count and self.total_pages < self.source_page_count)
+
 
 # ---------------------------------------------------------------------------
 # PDF Parser (PyMuPDF / fitz)
 # ---------------------------------------------------------------------------
 
-def _parse_pdf(file_bytes: bytes, filename: str) -> ParsedDocument:
+def _parse_pdf(file_bytes: bytes, filename: str, max_pages: Optional[int] = None) -> ParsedDocument:
     """
     Extract text, images, and tables from a PDF.
     Uses PyMuPDF's built-in table detection and image extraction.
@@ -98,10 +123,17 @@ def _parse_pdf(file_bytes: bytes, filename: str) -> ParsedDocument:
     doc = fitz.open(stream=file_bytes, filetype="pdf")
     pages: list[PageContent] = []
 
-    # Safe limits for large documents — OpenRouter free tier has no daily quota cap
-    MAX_PAGES = min(len(doc), 60)  # Analyze up to 60 pages
+    source_page_count = len(doc)
+    # Never silently impose a small provider-specific cap in the parser. The
+    # caller chooses a free-tier limit (normally 20–30) or a production limit
+    # (up to 200), and the result records whether anything was left unprocessed.
+    if max_pages is None:
+        max_pages = 200
+    if max_pages < 1:
+        raise ValueError("max_pages must be at least 1")
+    pages_to_process = min(source_page_count, max_pages)
 
-    for page_idx in range(MAX_PAGES):
+    for page_idx in range(pages_to_process):
         page = doc[page_idx]
         page_num = page_idx + 1
         pc = PageContent(page_number=page_num)
@@ -122,22 +154,21 @@ def _parse_pdf(file_bytes: bytes, filename: str) -> ParsedDocument:
                     # Get dimensions
                     pil_img = Image.open(io.BytesIO(img_bytes))
                     w, h = pil_img.size
-                    # Skip tiny images (icons, decorations < 50px)
-                    if w >= 50 and h >= 50:
-                        pc.images.append(ExtractedImage(
-                            page_number=page_num,
-                            image_bytes=img_bytes,
-                            mime_type=mime,
-                            width=w,
-                            height=h,
-                        ))
+                    pc.images.append(ExtractedImage(
+                        page_number=page_num,
+                        image_bytes=img_bytes,
+                        mime_type=mime,
+                        width=w,
+                        height=h,
+                        occurrence=img_index,
+                    ))
             except Exception as e:
                 logger.warning(f"Could not extract image xref={xref} on page {page_num}: {e}")
 
         # --- Tables (PyMuPDF built-in) ---
         try:
             tabs = page.find_tables()
-            for tab in tabs:
+            for table_index, tab in enumerate(tabs):
                 table_data = tab.extract()
                 if table_data and len(table_data) > 0:
                     # Clean None values
@@ -149,6 +180,7 @@ def _parse_pdf(file_bytes: bytes, filename: str) -> ParsedDocument:
                         page_number=page_num,
                         table_data=cleaned,
                         source_file=filename,
+                        table_index=table_index,
                     ))
         except Exception as e:
             logger.warning(f"Table extraction failed on page {page_num}: {e}")
@@ -161,6 +193,8 @@ def _parse_pdf(file_bytes: bytes, filename: str) -> ParsedDocument:
         filename=filename,
         total_pages=len(pages),
         pages=pages,
+        source_page_count=source_page_count,
+        page_limit=max_pages,
     )
 
 
@@ -168,7 +202,7 @@ def _parse_pdf(file_bytes: bytes, filename: str) -> ParsedDocument:
 # DOCX Parser
 # ---------------------------------------------------------------------------
 
-def _parse_docx(file_bytes: bytes, filename: str) -> ParsedDocument:
+def _parse_docx(file_bytes: bytes, filename: str, max_pages: Optional[int] = None) -> ParsedDocument:
     """
     Extract text, images, and tables from a .docx file.
     DOCX doesn't have fixed pages, so we treat the whole doc as page 1+
@@ -177,63 +211,89 @@ def _parse_docx(file_bytes: bytes, filename: str) -> ParsedDocument:
     doc = DocxDocument(io.BytesIO(file_bytes))
     pages: list[PageContent] = []
 
-    # --- Text: collect all paragraphs ---
-    paragraphs_text = [p.text for p in doc.paragraphs if p.text.strip()]
-    # Approximate page splitting (~3000 chars per page)
+    # DOCX does not expose reliable rendered page numbers through python-docx.
+    # Walk the document body in order instead of assigning media round-robin;
+    # this keeps each image/table near the text that introduces it.
     chars_per_page = 3000
-    full_text = "\n".join(paragraphs_text)
-    page_num = 0
-    for i in range(0, max(len(full_text), 1), chars_per_page):
-        page_num += 1
-        chunk = full_text[i:i + chars_per_page]
-        pages.append(PageContent(page_number=page_num, text=chunk))
+    if max_pages is None:
+        max_pages = 200
+    if max_pages < 1:
+        raise ValueError("max_pages must be at least 1")
+
+    def ensure_page() -> PageContent:
+        if not pages:
+            pages.append(PageContent(page_number=1))
+        return pages[-1]
+
+    def start_new_page_if_needed(incoming_chars: int) -> PageContent:
+        page = ensure_page()
+        if page.text and len(page.text) + incoming_chars > chars_per_page:
+            pages.append(PageContent(page_number=len(pages) + 1))
+        return pages[-1]
+
+    image_occurrence = 0
+    table_index = 0
+    body = doc.element.body
+    for child in body.iterchildren():
+        tag = child.tag.rsplit("}", 1)[-1]
+        if tag == "p":
+            paragraph = next((p for p in doc.paragraphs if p._p is child), None)
+            if paragraph is None:
+                continue
+            text = paragraph.text.strip()
+            page = start_new_page_if_needed(len(text) + 1)
+            if text:
+                page.text = f"{page.text}\n{text}".strip()
+
+            for blip in child.iter(qn("a:blip")):
+                rel_id = blip.get(qn("r:embed"))
+                rel = doc.part.rels.get(rel_id)
+                if not rel or "image" not in rel.reltype:
+                    continue
+                try:
+                    img_bytes = rel.target_part.blob
+                    pil_img = Image.open(io.BytesIO(img_bytes))
+                    fmt = (pil_img.format or "PNG").lower()
+                    mime = "image/jpeg" if fmt in {"jpg", "jpeg"} else f"image/{fmt}"
+                    page.images.append(ExtractedImage(
+                        page_number=page.page_number,
+                        image_bytes=img_bytes,
+                        mime_type=mime,
+                        width=pil_img.width,
+                        height=pil_img.height,
+                        occurrence=image_occurrence,
+                    ))
+                    image_occurrence += 1
+                except Exception as e:
+                    logger.warning(f"Could not extract DOCX image: {e}")
+        elif tag == "tbl":
+            table = next((t for t in doc.tables if t._tbl is child), None)
+            if table is None:
+                continue
+            table_data = [[cell.text.strip() for cell in row.cells] for row in table.rows]
+            if table_data:
+                page = start_new_page_if_needed(sum(len(cell) for row in table_data for cell in row))
+                page.tables.append(ExtractedTable(
+                    page_number=page.page_number,
+                    table_data=table_data,
+                    source_file=filename,
+                    table_index=table_index,
+                ))
+                table_index += 1
 
     if not pages:
         pages.append(PageContent(page_number=1, text=""))
 
-    # --- Images from relationships ---
-    img_counter = 0
-    for rel in doc.part.rels.values():
-        if "image" in rel.reltype:
-            try:
-                img_bytes = rel.target_part.blob
-                pil_img = Image.open(io.BytesIO(img_bytes))
-                w, h = pil_img.size
-                fmt = pil_img.format or "PNG"
-                mime = f"image/{fmt.lower()}"
-                if fmt.lower() == "jpg":
-                    mime = "image/jpeg"
-                img_counter += 1
-                # Assign images round-robin to pages
-                target_page = ((img_counter - 1) % len(pages))
-                pages[target_page].images.append(ExtractedImage(
-                    page_number=pages[target_page].page_number,
-                    image_bytes=img_bytes,
-                    mime_type=mime,
-                    width=w,
-                    height=h,
-                ))
-            except Exception as e:
-                logger.warning(f"Could not extract DOCX image: {e}")
-
-    # --- Tables ---
-    for tbl_idx, table in enumerate(doc.tables):
-        table_data = []
-        for row in table.rows:
-            table_data.append([cell.text for cell in row.cells])
-        if table_data:
-            # Assign table to the first page (DOCX doesn't give page info)
-            target_page_num = min(tbl_idx + 1, len(pages))
-            pages[target_page_num - 1].tables.append(ExtractedTable(
-                page_number=target_page_num,
-                table_data=table_data,
-                source_file=filename,
-            ))
+    source_page_count = len(pages)
+    if len(pages) > max_pages:
+        pages = pages[:max_pages]
 
     return ParsedDocument(
         filename=filename,
         total_pages=len(pages),
         pages=pages,
+        source_page_count=source_page_count,
+        page_limit=max_pages,
     )
 
 
@@ -241,10 +301,14 @@ def _parse_docx(file_bytes: bytes, filename: str) -> ParsedDocument:
 # TXT Parser
 # ---------------------------------------------------------------------------
 
-def _parse_txt(file_bytes: bytes, filename: str) -> ParsedDocument:
+def _parse_txt(file_bytes: bytes, filename: str, max_pages: Optional[int] = None) -> ParsedDocument:
     """Parse a plain text file. Splits into approximate pages."""
     text = file_bytes.decode("utf-8", errors="replace")
     chars_per_page = 3000
+    if max_pages is None:
+        max_pages = 200
+    if max_pages < 1:
+        raise ValueError("max_pages must be at least 1")
     pages: list[PageContent] = []
 
     page_num = 0
@@ -256,10 +320,14 @@ def _parse_txt(file_bytes: bytes, filename: str) -> ParsedDocument:
     if not pages:
         pages.append(PageContent(page_number=1, text=""))
 
+    source_page_count = len(pages)
+    pages = pages[:max_pages]
     return ParsedDocument(
         filename=filename,
         total_pages=len(pages),
         pages=pages,
+        source_page_count=source_page_count,
+        page_limit=max_pages,
     )
 
 
@@ -269,7 +337,11 @@ def _parse_txt(file_bytes: bytes, filename: str) -> ParsedDocument:
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".txt"}
 
-def parse_document(file_bytes: bytes, filename: str) -> ParsedDocument:
+def parse_document(
+    file_bytes: bytes,
+    filename: str,
+    max_pages: Optional[int] = 200,
+) -> ParsedDocument:
     """
     Main entry point. Parses any supported document and returns a
     ParsedDocument with zero content loss.
@@ -280,18 +352,18 @@ def parse_document(file_bytes: bytes, filename: str) -> ParsedDocument:
     logger.info(f"Parsing '{filename}' (ext={ext}, size={len(file_bytes):,} bytes)")
 
     if ext == ".pdf":
-        result = _parse_pdf(file_bytes, filename)
+        result = _parse_pdf(file_bytes, filename, max_pages)
     elif ext == ".docx":
-        result = _parse_docx(file_bytes, filename)
+        result = _parse_docx(file_bytes, filename, max_pages)
     elif ext == ".txt":
-        result = _parse_txt(file_bytes, filename)
+        result = _parse_txt(file_bytes, filename, max_pages)
     else:
         raise ValueError(
             f"Unsupported file type '{ext}'. Supported: {SUPPORTED_EXTENSIONS}"
         )
 
     logger.info(
-        f"Parsed '{filename}': {result.total_pages} pages, "
+        f"Parsed '{filename}': {result.total_pages}/{result.source_page_count or result.total_pages} pages, "
         f"{len(result.all_images)} images, {len(result.all_tables)} tables"
     )
     return result

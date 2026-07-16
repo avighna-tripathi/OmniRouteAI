@@ -57,11 +57,15 @@ class MapOutput(BaseModel):
     source_pages: list[int]
     facts: list[str]
     summary: str
+    key_entities: list[str] = Field(default_factory=list)
+    data_points: list[str] = Field(default_factory=list)
 
 class ReduceOutput(BaseModel):
     master_summary: str
     critic_feedback: str
     is_consistent: bool
+    quality_score: int = 0
+    stats: dict = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +95,10 @@ def _get_fast_model(temperature: float = 0.1) -> ChatOpenAI:
 def _get_pro_model(temperature: float = 0.2) -> ChatOpenAI:
     """Returns the primary pro model. Fallback is handled in call_with_fallback."""
     return _make_client(PRO_MODEL_POOL[0], temperature)
+
+
+# Compatibility alias for older local scripts.
+_get_flash_model = _get_fast_model
 
 
 async def _call_with_fallback(pool: list[str], messages: list, temperature: float = 0.1, max_rounds: int = 3) -> str:
@@ -174,6 +182,37 @@ Read the provided chunk and write a concise, dense summary.
 Capture the main narrative and arguments. Target roughly 25% of the original length.
 Write in a professional, objective tone. Output plain text only."""
 
+MAP_AGENT_SYSTEM = """You are the map-stage extraction and summarization agent.
+Read the complete document chunk. Return ONLY valid JSON with this exact shape:
+{"facts": ["atomic fact"], "key_entities": ["entity"], "data_points": ["number or metric"], "summary": "dense faithful summary"}
+Capture all important facts, numbers, named entities, decisions, caveats, and table/image details present in the chunk.
+Never invent information or use outside knowledge. Keep the summary concise but complete."""
+
+
+def _parse_json_object(raw: str) -> dict:
+    """Parse JSON returned by providers that occasionally add markdown fences."""
+    cleaned = (raw or "").strip()
+    if "```" in cleaned:
+        parts = cleaned.split("```")
+        cleaned = parts[1] if len(parts) > 1 else cleaned
+        if cleaned.lstrip().startswith("json"):
+            cleaned = cleaned.lstrip()[4:]
+    start, end = cleaned.find("{"), cleaned.rfind("}")
+    if start != -1 and end >= start:
+        cleaned = cleaned[start:end + 1]
+    value = json.loads(cleaned)
+    return value if isinstance(value, dict) else {}
+
+
+async def _run_map_agent(chunk_text: str) -> dict:
+    """Run both map tasks in one request to reduce free-tier API usage."""
+    messages = [
+        SystemMessage(content=MAP_AGENT_SYSTEM),
+        HumanMessage(content=f"Analyze this complete chunk:\n\n{chunk_text}"),
+    ]
+    raw = await _call_with_fallback(MAP_MODEL_POOL, messages, temperature=0.1)
+    return _parse_json_object(raw)
+
 async def _run_summary_agent(chunk_text: str) -> str:
     """Generates a dense summary using the model pool with automatic fallback."""
     messages = [
@@ -200,32 +239,28 @@ async def run_map_phase_single(
     """
     logger.info(f"Map phase: processing chunk {chunk_id}...")
 
-    # Small pace delay between chunks
-    await asyncio.sleep(5)
-
-    # Fact agent
+    # One structured request captures both outputs. This halves API calls and
+    # avoids truncating a full chunk before it reaches the model.
     try:
-        fact_result = await _run_fact_agent(chunk_text)
-        facts = fact_result.get("facts", []) if isinstance(fact_result, dict) else []
+        result = await _run_map_agent(chunk_text)
+        facts = result.get("facts", [])
+        key_entities = result.get("key_entities", [])
+        data_points = result.get("data_points", [])
+        summary = str(result.get("summary", "")).strip()
     except Exception as e:
-        logger.error(f"All models failed for Fact Agent on chunk {chunk_id}: {e}")
+        logger.error(f"All models failed for Map Agent on chunk {chunk_id}: {e}")
         facts = []
-
-    # Brief pause between fact and summary
-    await asyncio.sleep(3)
-
-    # Summary agent
-    try:
-        summary = await _run_summary_agent(chunk_text)
-    except Exception as e:
-        logger.error(f"All models failed for Summary Agent on chunk {chunk_id}: {e}")
+        key_entities = []
+        data_points = []
         summary = f"[Summarization failed for chunk {chunk_id}]"
 
     return MapOutput(
         chunk_id=chunk_id,
         source_pages=list(source_pages),
-        facts=facts,
+        facts=[str(item) for item in facts if str(item).strip()],
         summary=summary,
+        key_entities=[str(item) for item in key_entities if str(item).strip()],
+        data_points=[str(item) for item in data_points if str(item).strip()],
     )
 
 
@@ -244,32 +279,70 @@ Requirements:
 - Cite source pages where relevant e.g. [Page 3].
 - Write in a professional, objective tone.
 - Do NOT just paste the input — rewrite and synthesize.
-- Aim for 3-5 well-structured pages of output."""
+- Aim for 3-4 well-structured pages (roughly 1,800-2,400 words) of output.
+- Preserve important numbers, caveats, and source-page references."""
+
+MAX_REDUCE_INPUT_CHARS = 18000
+
+
+def _map_output_text(mo: MapOutput) -> str:
+    pages = ", ".join(map(str, sorted(mo.source_pages))) or "unknown"
+    parts = [f"Section {mo.chunk_id + 1} (pages: {pages})", f"Summary: {mo.summary}"]
+    if mo.facts:
+        parts.append("Facts:\n" + "\n".join(f"- {item}" for item in mo.facts))
+    if mo.data_points:
+        parts.append("Data points:\n" + "\n".join(f"- {item}" for item in mo.data_points))
+    if mo.key_entities:
+        parts.append("Entities: " + ", ".join(mo.key_entities))
+    return "\n".join(parts)
+
+
+async def _reduce_items(items: list[str], document_name: str) -> list[str]:
+    """Hierarchically reduce all map sections without silently truncating them."""
+    current = items
+    level = 0
+    while sum(len(item) for item in current) + len(current) * 2 > MAX_REDUCE_INPUT_CHARS:
+        level += 1
+        batches: list[str] = []
+        batch: list[str] = []
+        batch_size = 0
+        for item in current:
+            if batch and batch_size + len(item) > 12000:
+                batches.append("\n\n---\n\n".join(batch))
+                batch, batch_size = [], 0
+            batch.append(item)
+            batch_size += len(item)
+        if batch:
+            batches.append("\n\n---\n\n".join(batch))
+
+        reduced: list[str] = []
+        for idx, batch_text in enumerate(batches, 1):
+            messages = [
+                SystemMessage(content="""You are a document reduction agent. Merge the supplied sections faithfully.
+Keep every material fact, number, caveat, and source-page reference. Do not invent or omit a section.
+Return a concise but information-dense intermediate summary in plain markdown."""),
+                HumanMessage(content=f"Document: {document_name}\nReduction level: {level}, batch: {idx}\n\n{batch_text}"),
+            ]
+            reduced.append((await _call_with_fallback(PRO_MODEL_POOL, messages, temperature=0.2, max_rounds=2)).strip())
+        current = reduced
+    return current
+
 
 async def run_executive_agent(map_outputs: list[MapOutput], document_name: str) -> str:
-    """Synthesizes all map outputs into the final master summary using the pro model pool."""
-    payload = f"Document: {document_name}\n\n"
-    for mo in sorted(map_outputs, key=lambda x: x.chunk_id):
-        payload += f"### Section {mo.chunk_id + 1} (Pages: {', '.join(map(str, mo.source_pages))})\n"
-        payload += f"Summary: {mo.summary}\n\n"
-        if mo.facts:
-            payload += "Key Facts:\n" + "\n".join(f"- {f}" for f in mo.facts[:10]) + "\n"
-        payload += "---\n\n"
-
-    if len(payload) > 12000:
-        payload = payload[:12000] + "\n\n[Content truncated for token limit]"
-
+    """Synthesize every map output, using hierarchical reduction for large inputs."""
+    items = [_map_output_text(mo) for mo in sorted(map_outputs, key=lambda x: x.chunk_id)]
+    items = await _reduce_items(items, document_name)
+    payload = f"Document: {document_name}\n\n" + "\n\n---\n\n".join(items)
     messages = [
         SystemMessage(content=EXECUTIVE_SYSTEM),
-        HumanMessage(content=f"Synthesize this into a master summary:\n\n{payload}")
+        HumanMessage(content=f"Synthesize this into the final master summary:\n\n{payload}"),
     ]
-
-    logger.info("Sending payload to Executive Agent (pro pool)...")
+    logger.info("Sending complete hierarchical payload to Executive Agent")
     try:
         result = await _call_with_fallback(PRO_MODEL_POOL, messages, temperature=0.3, max_rounds=3)
         return result.strip()
     except Exception as e:
-        logger.error(f"Executive Agent failed across all models after 3 rounds: {e}. Returning empty string to trigger automatic Map-Reduce section synthesis.")
+        logger.error(f"Executive Agent failed across all models: {e}")
         return ""
 
 
@@ -289,7 +362,13 @@ async def run_critic_agent(master_summary: str, map_outputs: list[MapOutput]) ->
     for mo in map_outputs:
         all_facts.extend(mo.facts)
 
-    sample_facts = random.sample(all_facts, min(30, len(all_facts)))
+    # Deterministic sampling makes repeated runs comparable while still
+    # covering the beginning, middle, and end of a long fact list.
+    if len(all_facts) <= 30:
+        sample_facts = all_facts
+    else:
+        positions = [round(i * (len(all_facts) - 1) / 29) for i in range(30)]
+        sample_facts = [all_facts[pos] for pos in positions]
 
     payload = "FACTS:\n" + "\n".join(f"- {f}" for f in sample_facts)
     payload += "\n\nSUMMARY:\n" + master_summary[:2000]
@@ -304,9 +383,9 @@ async def run_critic_agent(master_summary: str, map_outputs: list[MapOutput]) ->
     except Exception as e:
         logger.warning(f"Critic Agent failed across all models: {e}. Using default verification consensus.")
         return {
-            "is_consistent": True,
-            "quality_score": 8,
-            "feedback": "Critic evaluation bypassed due to upstream provider rate limits. Summary verified via Map-Reduce section consensus."
+            "is_consistent": False,
+            "quality_score": 0,
+            "feedback": "Critic evaluation could not run because all provider attempts failed; consistency is unverified."
         }
 
     try:

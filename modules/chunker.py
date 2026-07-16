@@ -107,6 +107,11 @@ def chunk_document(
     Returns:
         List of ProcessedChunk objects, guaranteed to cover 100% of content.
     """
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be greater than zero")
+    if chunk_overlap < 0 or chunk_overlap >= chunk_size:
+        raise ValueError("chunk_overlap must be >= 0 and smaller than chunk_size")
+
     # Build enriched text blocks
     page_blocks = _build_page_text_blocks(parsed_doc, captions)
 
@@ -137,6 +142,13 @@ def chunk_document(
         if len(chunk_text) < MIN_CHUNK_SIZE and chunks:
             # Append tiny remainder to last chunk
             chunks[-1].text += "\n" + chunk_text
+            chunks[-1].source_pages = sorted(
+                set(chunks[-1].source_pages)
+                | {
+                    pg for seg_start, seg_end, pg in char_to_page
+                    if pos < seg_end and end > seg_start
+                }
+            )
             break
 
         if chunk_text:

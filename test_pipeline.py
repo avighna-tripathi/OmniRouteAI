@@ -7,6 +7,8 @@ Prints detailed step-by-step output to diagnose issues.
 import asyncio
 import sys
 import os
+import argparse
+from pathlib import Path
 
 # Streamlit secrets emulation — load from .streamlit/secrets.toml
 # We need to set this up BEFORE importing any module that uses st.secrets
@@ -26,8 +28,17 @@ with open(secrets_path) as f:
 # Patch st.secrets if running outside streamlit
 # Actually, we'll use streamlit's own mechanism by just importing properly
 
-def main():
-    pdf_path = r"C:\Users\hp\Downloads\Use2.pdf"
+def main(pdf_path: str | None = None):
+    parser = argparse.ArgumentParser(description="Run OmniRoute diagnostics on a document.")
+    parser.add_argument("path", nargs="?", default=pdf_path, help="Path to a PDF, DOCX, or TXT file")
+    args = parser.parse_args() if pdf_path is None else argparse.Namespace(path=pdf_path)
+    if not args.path:
+        parser.error("provide a document path")
+    document_path = Path(args.path).expanduser()
+    if not document_path.is_file():
+        print(f"File not found: {document_path}")
+        return 2
+    pdf_path = str(document_path)
     
     print("=" * 60)
     print("OmniRoute AI — Local Pipeline Test")
@@ -142,4 +153,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

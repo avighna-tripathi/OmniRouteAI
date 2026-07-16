@@ -10,9 +10,10 @@ from typing import Optional
 
 import streamlit as st
 from pymongo import MongoClient
+from gridfs import GridFSBucket
 from pymongo.errors import ConnectionFailure, OperationFailure
 
-from modules.parser import ExtractedTable
+from modules.parser import ExtractedImage, ExtractedTable
 from modules.utils import logger
 
 
@@ -43,6 +44,11 @@ def _get_collection():
     return client[db_name][coll_name]
 
 
+def _get_database():
+    client = _get_mongo_client()
+    return client[st.secrets["MONGODB_DB_NAME"]]
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -51,6 +57,7 @@ def store_tables(
     tables: list[ExtractedTable],
     document_name: str,
     session_id: Optional[str] = None,
+    document_id: Optional[str] = None,
 ) -> int:
     """
     Store all extracted tables to MongoDB.
@@ -77,6 +84,8 @@ def store_tables(
     for table in tables:
         doc = table.to_mongo_dict()
         doc["document_name"] = document_name
+        if document_id:
+            doc["document_id"] = document_id
         if session_id:
             doc["session_id"] = session_id
         documents.append(doc)
@@ -91,13 +100,61 @@ def store_tables(
         raise
 
 
+def store_images(
+    images: list[ExtractedImage],
+    document_name: str,
+    session_id: Optional[str] = None,
+    document_id: Optional[str] = None,
+) -> int:
+    """Store extracted image bytes in MongoDB GridFS with page metadata.
+
+    GridFS avoids MongoDB's 16 MB document limit and keeps the binary asset
+    separate from the table collection. Every occurrence is represented in
+    metadata even when the same image bytes appear on multiple pages.
+    """
+    if not images:
+        return 0
+
+    database = _get_database()
+    bucket_name = st.secrets.get("MONGODB_IMAGE_BUCKET", "extracted_images")
+    bucket = GridFSBucket(database, bucket_name=bucket_name)
+    stored = 0
+    for image in images:
+        metadata = {
+            "document_name": document_name,
+            "page_number": image.page_number,
+            "image_id": image.image_id,
+            "occurrence": image.occurrence,
+            "mime_type": image.mime_type,
+            "width": image.width,
+            "height": image.height,
+        }
+        if session_id:
+            metadata["session_id"] = session_id
+        if document_id:
+            metadata["document_id"] = document_id
+        try:
+            bucket.upload_from_stream(
+                f"{document_name}-page-{image.page_number}-{image.occurrence}.{image.mime_type.split('/')[-1]}",
+                image.image_bytes,
+                metadata=metadata,
+            )
+            stored += 1
+        except Exception as exc:
+            logger.warning(
+                f"Could not store image {image.image_id} on page {image.page_number}: {exc}"
+            )
+    logger.info(f"Stored {stored}/{len(images)} images in MongoDB GridFS")
+    return stored
+
+
 def get_tables_for_document(document_name: str) -> list[dict]:
     """Retrieve all stored tables for a given document name."""
     collection = _get_collection()
     cursor = collection.find(
         {"document_name": document_name},
         {"_id": 0},
-    ).sort("page_number", 1)
+    ).sort([("page_number", 1), ("table_index", 1)])
     return list(cursor)
 
 
@@ -121,7 +178,7 @@ def get_tables_for_session(session_id: str, document_name: str = None) -> list[d
     cursor = collection.find(
         query,
         {"_id": 0},
-    ).sort("page_number", 1)
+    ).sort([("page_number", 1), ("table_index", 1)])
     return list(cursor)
 
 
@@ -148,6 +205,24 @@ def delete_tables_for_document_session(session_id: str, document_name: str) -> i
     return result.deleted_count
 
 
+def get_images_for_session(session_id: str, document_name: Optional[str] = None) -> list[dict]:
+    """Return GridFS image metadata for the current session."""
+    database = _get_database()
+    bucket_name = st.secrets.get("MONGODB_IMAGE_BUCKET", "extracted_images")
+    query = {"metadata.session_id": session_id}
+    if document_name:
+        query["metadata.document_name"] = document_name
+    return [
+        {
+            "file_id": file_doc._id,
+            **(file_doc.metadata or {}),
+            "filename": file_doc.filename,
+            "length": file_doc.length,
+        }
+        for file_doc in GridFSBucket(database, bucket_name=bucket_name).find(query)
+    ]
+
+
 def get_table_summary_text(tables: list[ExtractedTable]) -> str:
     """
     Generate a text summary of tables for inclusion in the text pipeline.
@@ -158,14 +233,16 @@ def get_table_summary_text(tables: list[ExtractedTable]) -> str:
         return ""
 
     summaries = []
-    for tbl in tables:
-        headers = tbl.table_data[0] if tbl.table_data else []
-        num_rows = max(len(tbl.table_data) - 1, 0)
-        header_str = ", ".join(headers) if headers else "no headers"
-        summaries.append(
-            f"[Table on page {tbl.page_number}: {num_rows} rows, "
-            f"columns: {header_str}]"
-        )
+    for tbl_idx, tbl in enumerate(tables, 1):
+        rows = tbl.table_data or []
+        summaries.append(f"[Table {tbl_idx} on page {tbl.page_number}]")
+        if not rows:
+            summaries.append("(empty table)")
+            continue
+        # Keep the complete extracted matrix in the model context. MongoDB
+        # retains the canonical `raw` matrix; this text representation makes
+        # cell values available to the summarizer as well.
+        for row in rows:
+            summaries.append(" | ".join(str(cell).replace("\n", " ").strip() for cell in row))
 
     return "\n".join(summaries)
-

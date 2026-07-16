@@ -9,14 +9,16 @@ OmniRoute AI is a high-performance, zero-loss, agentic RAG (Retrieval-Augmented 
 
 ### Input
 - **Streamlit file upload** accepting PDF, Word (.docx), and Text (.txt) files.
-- Supports documents up to **200 pages**.
+- Supports documents up to **200 pages**. The UI defaults to **30 pages** for free-tier API limits and records any intentionally unprocessed pages.
 
 ### Data Preservation (Zero-Loss)
-- Extract **text**, **images**, and **tables** from every page.
-- No content, page, or image may be dropped at any stage.
+- Extract **text**, **images**, and **tables** from every processed page.
+- Original image bytes are stored in MongoDB GridFS with page/document metadata; tables are stored as structured JSON.
+- Page limits are explicit rather than hidden, and truncation is reported in pipeline statistics.
 
 ### Table Storage
 - Extracted tables are pushed directly to **MongoDB** as structured JSON with page metadata.
+- Full table cell values are also included in the model context; headers/row counts alone are not sufficient for summarization.
 - This preserves structural integrity that would be lost in plain text.
 
 ### UI/UX
@@ -33,10 +35,10 @@ OmniRoute AI is a high-performance, zero-loss, agentic RAG (Retrieval-Augmented 
 ## Multi-Agent Map-Reduce Pipeline
 
 ### Phase 1: Parser & Vision Module
-1. Parse the uploaded document.
+1. Parse the uploaded document with an explicit page limit.
 2. Separate **tables** → push to MongoDB as JSON.
 3. Extract **text** per page.
-4. Extract **images** → pass to **Gemini Vision** for descriptive text captions.
+4. Extract **images** → store original bytes in GridFS, then pass unique images to the vision model for descriptive captions.
 
 ### Phase 2: Forced Routing — Map Phase
 1. Chunk the combined text + image captions.
@@ -47,7 +49,7 @@ OmniRoute AI is a high-performance, zero-loss, agentic RAG (Retrieval-Augmented 
 
 ### Phase 3: Executive Aggregation — Reduce Phase
 1. **Executive Agent** (Gemini Pro) receives all structured Map outputs.
-2. Systematically merges intermediate outputs into a cohesive **3–5 page master summary**.
+2. Hierarchically merges all intermediate outputs into a cohesive **3–4 page master summary**; oversized inputs are reduced in batches instead of being truncated.
 3. **Critic Agent** performs a consistency check on the final output.
 
 ---
@@ -99,6 +101,8 @@ GEMINI_API_KEY = "your-gemini-api-key-here"
 MONGODB_URI = "your-mongodb-connection-string-here"
 MONGODB_DB_NAME = "omniroute_ai"
 MONGODB_COLLECTION = "extracted_tables"
+MONGODB_IMAGE_BUCKET = "extracted_images"
+VISION_REQUEST_DELAY_SECONDS = 1.0
 ```
 
 ---
@@ -117,4 +121,4 @@ MONGODB_COLLECTION = "extracted_tables"
 - [x] `modules/agents.py` — Multi-agent definitions
 - [x] `modules/pipeline.py` — Map-Reduce orchestration
 - [x] `app.py` — Streamlit UI
-- [ ] End-to-end testing
+- [x] Offline extraction/chunking/pipeline regression tests (`test_core.py`)
