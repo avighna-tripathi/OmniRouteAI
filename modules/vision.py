@@ -12,7 +12,7 @@ from modules.utils import logger, api_retry
 from modules.gemini_client import GeminiModel
 
 
-MODEL_VISION = st.secrets.get("GEMINI_VISION_MODEL", "gemini-2.5-flash-lite")
+MODEL_VISION = st.secrets.get("GEMINI_VISION_MODEL", "gemini-3.1-flash-lite")
 
 
 # ---------------------------------------------------------------------------

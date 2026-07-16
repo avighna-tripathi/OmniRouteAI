@@ -20,7 +20,7 @@ from modules.gemini_client import GeminiModel
 # Gemini config
 # ---------------------------------------------------------------------------
 
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash-lite"
+DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite"
 MAP_MODEL_POOL = [st.secrets.get("GEMINI_MAP_MODEL", DEFAULT_GEMINI_MODEL)]
 PRO_MODEL_POOL = [st.secrets.get("GEMINI_REDUCE_MODEL", DEFAULT_GEMINI_MODEL)]
 MODEL_VISION = st.secrets.get("GEMINI_VISION_MODEL", DEFAULT_GEMINI_MODEL)
@@ -80,8 +80,11 @@ async def _call_with_fallback(pool: list[str], messages: list, temperature: floa
     Returns the first successful response content.
     """
     last_error = None
+    unavailable_models: set[str] = set()
     for round_idx in range(1, max_rounds + 1):
         for model_id in pool:
+            if model_id in unavailable_models:
+                continue
             try:
                 client = _make_client(model_id, temperature)
                 logger.info(f"[Round {round_idx}/{max_rounds}] Trying model: {model_id}")
@@ -91,6 +94,12 @@ async def _call_with_fallback(pool: list[str], messages: list, temperature: floa
             except Exception as e:
                 last_error = e
                 err_str = str(e)
+                if "404" in err_str or "not_found" in err_str.lower() or "no longer available" in err_str.lower():
+                    unavailable_models.add(model_id)
+                    logger.error(
+                        f"Model {model_id} is unavailable for this Gemini account; skipping it."
+                    )
+                    continue
                 if "429" in err_str or "rate" in err_str.lower() or "limit" in err_str.lower():
                     logger.warning(f"[Round {round_idx}] Model {model_id} rate-limited. Trying next in pool...")
                     await asyncio.sleep(4)  # Brief pause before trying next model

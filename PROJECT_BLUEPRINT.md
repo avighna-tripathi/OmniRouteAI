@@ -63,8 +63,8 @@ OmniRoute AI is a high-performance, zero-loss, agentic RAG (Retrieval-Augmented 
 ### Tiered Model Routing
 | Phase | Model | Reason |
 |-------|-------|--------|
-| Map Phase (Fact/Summary Agents) | `gemini-2.5-flash-lite` | Free-tier speed and multimodal support |
-| Reduce Phase (Executive/Critic) | `gemini-2.5-flash-lite` | Free-tier synthesis and consistency validation |
+| Map Phase (Fact/Summary Agents) | `gemini-3.1-flash-lite` | Free-tier speed and multimodal support |
+| Reduce Phase (Executive/Critic) | `gemini-3.1-flash-lite` | Free-tier synthesis and consistency validation |
 
 ### Rate Limit Resilience
 - **Exponential backoff** via `tenacity` library on all API calls.
@@ -99,9 +99,9 @@ OmniRoute AI/
 
 ```toml
 GEMINI_API_KEY = "your-gemini-api-key-here"
-GEMINI_MAP_MODEL = "gemini-2.5-flash-lite"
-GEMINI_REDUCE_MODEL = "gemini-2.5-flash-lite"
-GEMINI_VISION_MODEL = "gemini-2.5-flash-lite"
+GEMINI_MAP_MODEL = "gemini-3.1-flash-lite"
+GEMINI_REDUCE_MODEL = "gemini-3.1-flash-lite"
+GEMINI_VISION_MODEL = "gemini-3.1-flash-lite"
 MONGODB_URI = "your-mongodb-connection-string-here"
 MONGODB_DB_NAME = "omniroute_ai"
 MONGODB_COLLECTION = "extracted_tables"
