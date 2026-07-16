@@ -63,8 +63,8 @@ OmniRoute AI is a high-performance, zero-loss, agentic RAG (Retrieval-Augmented 
 ### Tiered Model Routing
 | Phase | Model | Reason |
 |-------|-------|--------|
-| Map Phase (Fact/Summary Agents) | `gemini-1.5-flash` | Speed + cost-efficiency for parallel work |
-| Reduce Phase (Executive/Critic) | `gemini-1.5-pro` | Deep logical synthesis |
+| Map Phase (Fact/Summary Agents) | `gemini-2.5-flash-lite` | Free-tier speed and multimodal support |
+| Reduce Phase (Executive/Critic) | `gemini-2.5-flash-lite` | Free-tier synthesis and consistency validation |
 
 ### Rate Limit Resilience
 - **Exponential backoff** via `tenacity` library on all API calls.
@@ -85,6 +85,7 @@ OmniRoute AI/
 │   ├── __init__.py
 │   ├── parser.py               # Document parsing (PDF, DOCX, TXT)
 │   ├── vision.py               # Gemini Vision image captioning
+│   ├── gemini_client.py        # Official Google Gemini SDK adapter
 │   ├── table_store.py          # MongoDB table storage
 │   ├── chunker.py              # Text chunking logic
 │   ├── agents.py               # Fact Agent, Summary Agent, Executive Agent, Critic
@@ -98,6 +99,9 @@ OmniRoute AI/
 
 ```toml
 GEMINI_API_KEY = "your-gemini-api-key-here"
+GEMINI_MAP_MODEL = "gemini-2.5-flash-lite"
+GEMINI_REDUCE_MODEL = "gemini-2.5-flash-lite"
+GEMINI_VISION_MODEL = "gemini-2.5-flash-lite"
 MONGODB_URI = "your-mongodb-connection-string-here"
 MONGODB_DB_NAME = "omniroute_ai"
 MONGODB_COLLECTION = "extracted_tables"

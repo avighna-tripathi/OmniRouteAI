@@ -1,7 +1,6 @@
 """
 Defines the multi-agent system for the Map and Reduce phases.
-Uses OpenRouter free tier with a multi-model fallback pool.
-If one model is rate-limited, automatically falls back to the next available model.
+Uses Google's Gemini API free-tier model with retry handling.
 """
 from typing import Optional
 import asyncio
@@ -9,38 +8,22 @@ import json
 import random
 
 import streamlit as st
-from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
 from modules.utils import logger
+from modules.gemini_client import GeminiModel
 
 
 # ---------------------------------------------------------------------------
-# OpenRouter config
+# Gemini config
 # ---------------------------------------------------------------------------
 
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-
-# Model pools — ordered from preferred to fallback.
-# If one model is rate-limited, the next is tried automatically.
-MAP_MODEL_POOL = [
-    "meta-llama/llama-3.2-3b-instruct:free",       # Small, fast, less congested
-    "meta-llama/llama-3.3-70b-instruct:free",       # Larger, might be congested
-    "google/gemma-4-26b-a4b-it:free",              # Google-hosted
-    "nvidia/nemotron-3-nano-30b-a3b:free",          # Nvidia-hosted
-    "nousresearch/hermes-3-405b-instruct:free",     # 405B fallback
-]
-
-PRO_MODEL_POOL = [
-    "qwen/qwen3-coder-480b-a35b-instruct:free",    # Primary — 480B
-    "meta-llama/llama-3.3-70b-instruct:free",       # Fallback
-    "nousresearch/hermes-3-405b-instruct:free",     # Second fallback
-    "google/gemma-4-31b-it:free",                  # Third fallback
-]
-
-MODEL_VISION = "nvidia/nemotron-nano-12b-v2-vl:free"
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash-lite"
+MAP_MODEL_POOL = [st.secrets.get("GEMINI_MAP_MODEL", DEFAULT_GEMINI_MODEL)]
+PRO_MODEL_POOL = [st.secrets.get("GEMINI_REDUCE_MODEL", DEFAULT_GEMINI_MODEL)]
+MODEL_VISION = st.secrets.get("GEMINI_VISION_MODEL", DEFAULT_GEMINI_MODEL)
 
 
 # ---------------------------------------------------------------------------
@@ -72,27 +55,16 @@ class ReduceOutput(BaseModel):
 # Model factory with fallback pool support
 # ---------------------------------------------------------------------------
 
-def _make_client(model_id: str, temperature: float = 0.1) -> ChatOpenAI:
-    """Creates a ChatOpenAI client pointed at OpenRouter for the given model."""
-    return ChatOpenAI(
-        model=model_id,
-        openai_api_key=st.secrets["OPENROUTER_API_KEY"],
-        openai_api_base=OPENROUTER_BASE_URL,
-        temperature=temperature,
-        max_retries=0,  # We handle retries ourselves via the pool fallback
-        default_headers={
-            "HTTP-Referer": "https://omnirouteai.streamlit.app",
-            "X-Title": "OmniRoute AI",
-        },
-    )
+def _make_client(model_id: str, temperature: float = 0.1) -> GeminiModel:
+    return GeminiModel(model_id, temperature)
 
 
-def _get_fast_model(temperature: float = 0.1) -> ChatOpenAI:
+def _get_fast_model(temperature: float = 0.1) -> GeminiModel:
     """Returns the primary fast model. Fallback is handled in call_with_fallback."""
     return _make_client(MAP_MODEL_POOL[0], temperature)
 
 
-def _get_pro_model(temperature: float = 0.2) -> ChatOpenAI:
+def _get_pro_model(temperature: float = 0.2) -> GeminiModel:
     """Returns the primary pro model. Fallback is handled in call_with_fallback."""
     return _make_client(PRO_MODEL_POOL[0], temperature)
 

@@ -30,7 +30,7 @@ logger = logging.getLogger("omniroute")
 
 def get_retry_decorator(max_attempts: int = 5, min_wait: int = 35, max_wait: int = 120):
     """
-    Returns a tenacity retry decorator configured for OpenRouter free tier rate limits.
+    Returns a tenacity retry decorator configured for Gemini free-tier rate limits.
 
     Free models return Retry-After: 30s on 429s, so we wait at least 35s to be safe.
     Uses exponential backoff: 35s, 70s, 120s (capped).

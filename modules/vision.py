@@ -1,20 +1,18 @@
 """
-Handles multimodal capabilities — describing extracted images using a Vision LLM.
-Uses OpenRouter free vision model: meta-llama/llama-3.2-11b-vision-instruct:free
+Handles multimodal capabilities — describing extracted images using Gemini Vision.
 """
 import asyncio
 from dataclasses import dataclass
 
 import streamlit as st
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage
+from google.genai import types
 
 from modules.parser import ExtractedImage
 from modules.utils import logger, api_retry
+from modules.gemini_client import GeminiModel
 
 
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-MODEL_VISION = "nvidia/nemotron-nano-12b-v2-vl:free"   # Only free VL model in the free list
+MODEL_VISION = st.secrets.get("GEMINI_VISION_MODEL", "gemini-2.5-flash-lite")
 
 
 # ---------------------------------------------------------------------------
@@ -40,40 +38,18 @@ CAPTION_PROMPT = (
 )
 
 
-def _get_vision_model() -> ChatOpenAI:
-    """Llama 3.2 Vision 11B via OpenRouter — free multimodal model."""
-    return ChatOpenAI(
-        model=MODEL_VISION,
-        openai_api_key=st.secrets["OPENROUTER_API_KEY"],
-        openai_api_base=OPENROUTER_BASE_URL,
-        temperature=0.1,
-        max_retries=4,
-        default_headers={
-            "HTTP-Referer": "https://omnirouteai.streamlit.app",
-            "X-Title": "OmniRoute AI",
-        },
-    )
+def _get_vision_model() -> GeminiModel:
+    return GeminiModel(MODEL_VISION, temperature=0.1)
 
 
 @api_retry
-async def _caption_single_image(model: ChatOpenAI, image: ExtractedImage) -> CaptionedImage:
+async def _caption_single_image(model: GeminiModel, image: ExtractedImage) -> CaptionedImage:
     """Sends a single image to the Vision model to generate a descriptive caption."""
-    b64_data = image.to_base64()
-
-    message = HumanMessage(
-        content=[
-            {"type": "text", "text": CAPTION_PROMPT},
-            {
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:{image.mime_type};base64,{b64_data}"
-                },
-            },
-        ]
-    )
-
     logger.info(f"Generating caption for image on page {image.page_number}...")
-    response = await model.ainvoke([message])
+    response = await model.generate_content([
+        types.Part.from_bytes(data=image.image_bytes, mime_type=image.mime_type),
+        CAPTION_PROMPT,
+    ])
 
     return CaptionedImage(
         page_number=image.page_number,

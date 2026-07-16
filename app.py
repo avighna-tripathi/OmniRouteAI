@@ -382,7 +382,7 @@ with st.sidebar:
     | Critic | `Qwen3 480B / Llama 70B / Hermes` |
     | Vision | `Nemotron Nano 12B VL` |
 
-    *Powered by OpenRouter (Multi-Model Pool)*
+    *Powered by Google Gemini (free-tier model)*
     """)
 
     st.markdown("---")
@@ -524,7 +524,7 @@ if st.session_state.pipeline_result is not None:
         st.error(
             "⚠️ The pipeline completed but produced an empty summary. "
             "This usually means the Reduce (Executive Agent) API call "
-            "returned an empty response. Check your OpenRouter API key "
+            "returned an empty response. Check your Gemini API key "
             "and model availability."
         )
         st.code(f"Debug: result type = {type(result)}, "
